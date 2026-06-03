@@ -1,7 +1,7 @@
 [project]
 name = "mcp-modal"
 version = "0.2.0"
-description = "MCP server for managing Modal (modal.com) apps, containers, volumes, and secrets."
+description = "MCP server for managing Modal apps, containers, volumes, and secrets."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

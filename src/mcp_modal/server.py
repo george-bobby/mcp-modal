@@ -1,4 +1,4 @@
-"""MCP server for managing Modal (modal.com) apps, containers, volumes, and secrets.
+"""MCP server for managing Modal apps, containers, volumes, and secrets.
 
 All tools shell out to the local `modal` CLI, so they use whatever Modal profile /
 credentials are configured on the host (`~/.modal.toml`). Account-scoped operations

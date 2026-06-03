@@ -2,6 +2,8 @@
 
 # MCP Modal Server
 
+[![PyPI](https://img.shields.io/pypi/v/mcp-modal.svg)](https://pypi.org/project/mcp-modal/)
+
 An MCP server for managing [Modal](https://modal.com) — apps, containers, volumes, and secrets — and for deploying & running Modal apps directly from [Claude Code](https://docs.claude.com/en/docs/claude-code) and other MCP clients.
 
 
@@ -9,16 +11,7 @@ Every tool shells out to your local `modal` CLI, so it operates against whatever
 
 ## Installation
 
-1. Clone this repository:
-```bash
-git clone https://github.com/george-bobby/mcp-modal.git
-cd mcp-modal
-```
-
-2. Install dependencies using [`uv`](https://docs.astral.sh/uv/):
-```bash
-uv sync
-```
+The server is published on PyPI as [`mcp-modal`](https://pypi.org/project/mcp-modal/). No manual install is needed — the recommended way to run it is with [`uvx`](https://docs.astral.sh/uv/), which fetches and launches it on demand. Just point your MCP client at the command below (see [Configuration](#configuration)).
 
 ## Logging in to Modal
 
@@ -35,8 +28,7 @@ This opens a browser to log in and stores a token in `~/.modal.toml`. Already lo
 Add the server to Claude Code with the `claude mcp` CLI:
 
 ```bash
-claude mcp add mcp-modal -- \
-  uv --project /path/to/mcp-modal run /path/to/mcp-modal/src/mcp_modal/server.py
+claude mcp add mcp-modal -- uvx mcp-modal
 ```
 
 Or add it to a `.mcp.json` file in your project root:
@@ -45,22 +37,19 @@ Or add it to a `.mcp.json` file in your project root:
 {
   "mcpServers": {
     "mcp-modal": {
-      "command": "uv",
-      "args": [
-        "--project", "/path/to/mcp-modal",
-        "run", "/path/to/mcp-modal/src/mcp_modal/server.py"
-      ]
+      "command": "uvx",
+      "args": ["mcp-modal"]
     }
   }
 }
 ```
 
-Replace `/path/to/mcp-modal` with the absolute path to your cloned repository.
+To pin a specific release, use `uvx mcp-modal@0.2.0`.
 
 ## Requirements
 
 - Python 3.11 or higher
-- `uv` package manager
+- [`uv`](https://docs.astral.sh/uv/) (provides `uvx`)
 - Modal CLI 1.x configured with valid credentials (`modal setup`)
 - For Modal **deploy** and **run** support:
   - The project being deployed/run must use `uv` for dependency management
@@ -231,26 +220,6 @@ All tools return responses in a standardized format, with slight variations depe
     "stderr": "error output"     # if available
 }
 ```
-
-## Publishing to the MCP Registry
-
-This repo ships a [`server.json`](server.json) following the [MCP Registry](https://github.com/modelcontextprotocol/registry) spec, and the README carries the `mcp-name:` ownership marker required for PyPI verification. To publish a new version:
-
-```bash
-# 1. Build and publish the package to PyPI (the registry only hosts metadata)
-uv build
-uv publish
-
-# 2. Publish the server entry to the MCP Registry
-mcp-publisher login github      # GitHub auth for the io.github.george-bobby/* namespace
-mcp-publisher publish
-```
-
-Bump the `version` in both [`pyproject.toml`](pyproject.toml) and [`server.json`](server.json) together — they must match.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
