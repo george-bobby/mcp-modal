@@ -4,7 +4,6 @@
 
 An MCP server for managing [Modal](https://modal.com) — apps, containers, volumes, and secrets — and for deploying & running Modal apps directly from [Claude Code](https://docs.claude.com/en/docs/claude-code) and other MCP clients.
 
-> **Heads up:** This is for [Modal](https://modal.com), the serverless cloud platform for running code on GPUs/CPUs — not any other product named "Modal".
 
 Every tool shells out to your local `modal` CLI, so it operates against whatever Modal profile and credentials are configured on your machine. There are no extra tokens to manage.
 
