@@ -1,0 +1,23 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.george-bobby/mcp-modal",
+  "description": "MCP server for managing Modal (modal.com) apps, containers, volumes, and secrets.",
+  "title": "MCP Modal Server",
+  "repository": {
+    "url": "https://github.com/george-bobby/mcp-modal",
+    "source": "github"
+  },
+  "version": "0.2.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "mcp-modal",
+      "version": "0.2.0",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
