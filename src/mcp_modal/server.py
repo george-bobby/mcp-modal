@@ -215,6 +215,25 @@ def grep_lines(
     return total, blocks
 
 
+def filter_log_lines(
+    text: str, exclude: str, regex: bool, case_sensitive: bool
+) -> Any:
+    """Drop lines matching `exclude` from `text`, returning (filtered_text, removed_count).
+
+    Used to strip high-volume noise (e.g. repeated "queue put failed" spam) before
+    grepping for the real signal. Returns (None, error_message) on a bad regex.
+    """
+    flags = 0 if case_sensitive else re.IGNORECASE
+    try:
+        compiled = re.compile(exclude if regex else re.escape(exclude), flags)
+    except re.error as e:
+        return None, f"Invalid exclude pattern: {e}"
+
+    lines = text.splitlines()
+    kept = [line for line in lines if not compiled.search(line)]
+    return "\n".join(kept), len(lines) - len(kept)
+
+
 # ---------------------------------------------------------------------------
 # Deploy & run (compute) — these wrap the command in the project's uv venv
 # ---------------------------------------------------------------------------
@@ -383,6 +402,7 @@ async def get_modal_app_logs(
     tail: Optional[int] = None,
     search: Optional[str] = None,
     source: Optional[str] = None,
+    timestamps: bool = False,
     follow: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -391,6 +411,11 @@ async def get_modal_app_logs(
     By default the CLI fetches recent entries and exits. Pass `follow=True` to live-stream
     (collected for up to `timeout_seconds`, then cut off as a snapshot). Use list_modal_apps
     to discover the app name/ID.
+
+    Note: these logs only cover the stdout/stderr/system streams. Some failures (e.g. a
+    container or web-endpoint crash reported as "... exited with ...") are emitted as Modal
+    dashboard/browser events, not written to a log stream, so they will NOT appear here —
+    check the Modal dashboard for those.
 
     Args:
         app_identifier: App name (e.g. "my-app") or app ID (e.g. "ap-123456").
@@ -401,6 +426,7 @@ async def get_modal_app_logs(
         tail: Show only the last N log entries.
         search: Only include log lines matching this search text.
         source: Filter by source: "stdout", "stderr", or "system".
+        timestamps: If True, prefix each line with its wall-clock timestamp (`--timestamps`).
         follow: If True, live-stream logs until the app stops or the timeout is reached.
 
     Returns:
@@ -411,6 +437,8 @@ async def get_modal_app_logs(
         command = ["modal", "app", "logs", app_identifier]
         if follow:
             command.append("-f")
+        if timestamps:
+            command.append("--timestamps")
         if since:
             command.extend(["--since", since])
         if until:
@@ -583,10 +611,16 @@ async def get_modal_container_logs(
     tail: Optional[int] = None,
     search: Optional[str] = None,
     source: Optional[str] = None,
+    timestamps: bool = False,
     follow: bool = False,
 ) -> Dict[str, Any]:
     """
     Fetch or stream logs for a specific Modal container (`modal container logs`).
+
+    Note: these logs only cover the stdout/stderr/system streams. Some failures (e.g. a
+    container or web-endpoint crash reported as "... exited with ...") are emitted as Modal
+    dashboard/browser events, not written to a log stream, so they will NOT appear here —
+    check the Modal dashboard for those.
 
     Args:
         container_id: Container ID (e.g. "ta-123456"), from list_modal_containers.
@@ -596,6 +630,7 @@ async def get_modal_container_logs(
         tail: Show only the last N log entries.
         search: Only include log lines matching this search text.
         source: Filter by source: "stdout", "stderr", or "system".
+        timestamps: If True, prefix each line with its wall-clock timestamp (`--timestamps`).
         follow: If True, live-stream logs until the container stops or the timeout hits.
 
     Returns:
@@ -606,6 +641,8 @@ async def get_modal_container_logs(
         command = ["modal", "container", "logs", container_id]
         if follow:
             command.append("-f")
+        if timestamps:
+            command.append("--timestamps")
         if since:
             command.extend(["--since", since])
         if until:
@@ -731,6 +768,9 @@ async def search_modal_logs(
     max_matches: int = 50,
     since: Optional[str] = None,
     tail: Optional[int] = None,
+    source: Optional[str] = None,
+    exclude: Optional[str] = None,
+    timestamps: bool = True,
     timeout_seconds: int = 30,
     env: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -739,6 +779,16 @@ async def search_modal_logs(
     context — useful for finding where something went wrong (errors, tracebacks, a request
     ID, etc.). Logs are fetched once and grepped locally, so unlike the `search` argument
     on the log tools you get the lines around each hit, not just the matching line.
+
+    Each context line is prefixed with its wall-clock timestamp (from `--timestamps`) so a
+    match can be tied to an exact moment without a follow-up fetch; set `timestamps=False`
+    to omit them. Use `source` and/or `exclude` to cut high-volume noise (e.g. repeated
+    "queue put failed" spam) before searching.
+
+    Note: these logs only cover the stdout/stderr/system streams. Some failures (e.g. a
+    container or web-endpoint crash reported as "... exited with ...") are emitted as Modal
+    dashboard/browser events, not written to a log stream, so a search for them here will
+    return 0 matches even though the failure is real — check the Modal dashboard for those.
 
     Args:
         identifier: App name/ID (e.g. "my-app", "ap-123456") or container ID ("ta-123456").
@@ -752,21 +802,34 @@ async def search_modal_logs(
         since: Only search logs newer than this — ISO 8601 or relative like "2h", "1d".
         tail: Only search the last N log entries. If neither `since` nor `tail` is given,
             the last 1000 entries are searched.
+        source: Filter by source before searching: "stdout", "stderr", or "system".
+            Helpful when one stream (often stdout) is dominated by noise.
+        exclude: Drop log lines matching this text before searching — e.g. "queue put failed"
+            to strip repeated spam. Honors the `regex` and `case_sensitive` flags.
+        timestamps: If True (default), prefix each line with its wall-clock timestamp so
+            matches carry their exact time. Set False for terser output.
         timeout_seconds: Max seconds to spend fetching logs before searching. Defaults to 30.
         env: Optional Modal environment (apps only).
 
     Returns:
         A dictionary with `match_count` (total hits), `matches` (a list of context blocks,
-        each a string with line numbers; matched lines are prefixed with ">"), and
-        `returned` (how many blocks are included after `max_matches`).
+        each a string with timestamped, line-numbered entries; matched lines are prefixed
+        with ">"), `returned` (how many blocks are included after `max_matches`), and
+        `excluded_lines` (count of lines dropped by `exclude`, when used).
     """
     if target not in ("app", "container"):
         return {"success": False, "error": "target must be 'app' or 'container'"}
     if not pattern:
         return {"success": False, "error": "A non-empty search pattern is required"}
+    if source is not None and source not in ("stdout", "stderr", "system"):
+        return {"success": False, "error": "source must be 'stdout', 'stderr', or 'system'"}
     try:
         subcommand = "app" if target == "app" else "container"
         command = ["modal", subcommand, "logs", identifier]
+        if timestamps:
+            command.append("--timestamps")
+        if source:
+            command.extend(["--source", source])
         if since:
             command.extend(["--since", since])
         if tail is not None:
@@ -791,6 +854,15 @@ async def search_modal_logs(
 
         # Modal writes log lines to stdout; some builds emit them on stderr — search both.
         log_text = result["stdout"] or result["stderr"] or ""
+        excluded_lines = 0
+        if exclude:
+            log_text, excluded_lines = filter_log_lines(
+                log_text, exclude, regex, case_sensitive
+            )
+            if log_text is None:
+                # filter_log_lines returned an error message (e.g. bad regex) in the count slot.
+                return {"success": False, "error": excluded_lines, "command": result["command"]}
+
         total, blocks = grep_lines(
             log_text, pattern, regex, case_sensitive, context_lines, max_matches
         )
@@ -809,10 +881,14 @@ async def search_modal_logs(
             "logs_truncated": result["timed_out"],
             "command": result["command"],
         }
+        if exclude:
+            response["excluded_lines"] = excluded_lines
         if total == 0:
             response["message"] = (
                 f"No matches for {pattern!r} in the fetched logs. Try a broader pattern, "
-                "increase `tail`/`since`, or set regex=True."
+                "increase `tail`/`since`, or set regex=True. Note that some failures "
+                "(e.g. crashes reported as '... exited with ...') are Modal dashboard "
+                "events, not log lines, and will never match here — check the dashboard."
             )
         elif len(blocks) < total:
             response["message"] = (
@@ -863,14 +939,37 @@ async def list_modal_volume_contents(volume_name: str, path: str = "/") -> Dict[
         path: Path within the volume to list contents from. Defaults to root ("/").
 
     Returns:
-        A dictionary containing the parsed JSON output of the volume contents.
+        A dictionary with `contents` (the parsed JSON listing). When the listing is empty,
+        `empty` is True and a `message` confirms the path is genuinely empty — as opposed to
+        a failure, which returns `success: False` with an `error`. This makes an empty
+        directory distinguishable from a path-format mistake or a missing volume.
     """
     try:
         result = run_modal_command(["modal", "volume", "ls", "--json", volume_name, path])
         response = handle_json_response(result, "Failed to list volume contents")
-        if response["success"]:
-            return {"success": True, "contents": response["data"]}
-        return response
+        if not response["success"]:
+            return response
+
+        contents = response["data"]
+        out: Dict[str, Any] = {
+            "success": True,
+            "volume_name": volume_name,
+            "path": path,
+            "contents": contents,
+            "command": result["command"],
+        }
+        # An empty list is a valid, successful result — flag it so the caller doesn't
+        # mistake "genuinely empty" for "the listing failed" or "wrong path format".
+        if isinstance(contents, list) and not contents:
+            out["empty"] = True
+            out["message"] = (
+                f"{volume_name!r} at path {path!r} is empty (the listing succeeded and "
+                "returned no entries). If you expected files, double-check the path "
+                "(e.g. a leading '/' or a subdirectory) and the volume name."
+            )
+        else:
+            out["empty"] = False
+        return out
     except Exception as e:
         logger.error(f"Failed to list Modal volume contents: {e}")
         raise

@@ -93,9 +93,12 @@ omitted, they use the profile's default (or `MODAL_ENVIRONMENT`).
 4. **Get Modal App Logs** (`get_modal_app_logs`)
    - Fetches or streams logs for an app by name or ID (`modal app logs`).
    - Parameters: `app_identifier` (required), `timeout_seconds` (default 30), `env`,
-     `since`, `until`, `tail`, `search`, `source` (`stdout`/`stderr`/`system`), `follow`
+     `since`, `until`, `tail`, `search`, `source` (`stdout`/`stderr`/`system`),
+     `timestamps` (prefix each line with its wall-clock time), `follow`
    - With `follow=True`, logs stream until the app stops or `timeout_seconds` is reached,
      returning a snapshot with `truncated: true`.
+   - Only covers the stdout/stderr/system streams; some failures (e.g. a crash reported as
+     "... exited with ...") are Modal dashboard events, not log lines, and won't appear here.
 
 5. **Stop Modal App** (`stop_modal_app`)
    - Permanently stops an app and terminates its containers (`modal app stop`).
@@ -120,7 +123,8 @@ omitted, they use the profile's default (or `MODAL_ENVIRONMENT`).
 9. **Get Modal Container Logs** (`get_modal_container_logs`)
    - Fetches or streams logs for a container ID (`modal container logs`).
    - Parameters: `container_id` (required), `timeout_seconds` (default 30),
-     `since`, `until`, `tail`, `search`, `source`, `follow`
+     `since`, `until`, `tail`, `search`, `source`, `timestamps`, `follow`
+   - Same stdout/stderr/system-only caveat as the app-logs tool above.
 
 10. **Exec in Modal Container** (`exec_modal_container`)
     - Runs a command inside a running container (`modal container exec --no-pty`).
@@ -141,14 +145,20 @@ omitted, they use the profile's default (or `MODAL_ENVIRONMENT`).
     - Parameters: `identifier` (required — app name/ID or container ID), `pattern` (required),
       `target` (`app`/`container`, default `app`), `regex`, `case_sensitive`,
       `context_lines` (default 3), `max_matches` (default 50), `since`, `tail`
-      (defaults to the last 1000 entries), `timeout_seconds`, `env`
-    - Returns `match_count` and `matches`: line-numbered context blocks where matched lines
-      are prefixed with `>`, e.g. `> 8: ValueError: bad input`.
+      (defaults to the last 1000 entries), `source` (`stdout`/`stderr`/`system`),
+      `exclude` (drop noise lines before searching, e.g. `"queue put failed"`),
+      `timestamps` (default `true` — carry each line's wall-clock time into the result),
+      `timeout_seconds`, `env`
+    - Returns `match_count` and `matches`: timestamped, line-numbered context blocks where
+      matched lines are prefixed with `>`, e.g. `> 8: 2026-06-04T... ValueError: bad input`.
+      Reports `excluded_lines` when `exclude` is used.
+    - Only searches the stdout/stderr/system streams; failures emitted as Modal dashboard
+      events (e.g. "... exited with ...") return 0 matches even when the failure is real.
 
 ### Volumes — Files
 
 13. **List Modal Volumes** (`list_modal_volumes`) — lists all volumes. Parameters: none.
-14. **List Volume Contents** (`list_modal_volume_contents`) — `volume_name`, `path` (default `/`).
+14. **List Volume Contents** (`list_modal_volume_contents`) — `volume_name`, `path` (default `/`). Sets `empty: true` with a message when the listing genuinely returns nothing, so an empty directory is distinguishable from an error or a wrong path.
 15. **Copy Files** (`copy_modal_volume_files`) — `volume_name`, `paths` (last is destination).
 16. **Remove File** (`remove_modal_volume_file`) — `volume_name`, `remote_path`, `recursive`.
 17. **Upload File** (`put_modal_volume_file`) — `volume_name`, `local_path`, `remote_path`, `force`.
