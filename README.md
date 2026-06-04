@@ -2,6 +2,8 @@
 
 # MCP Modal Server
 
+[![mcp-modal MCP server](https://glama.ai/mcp/servers/george-bobby/mcp-modal/badges/card.svg)](https://glama.ai/mcp/servers/george-bobby/mcp-modal)
+
 [![PyPI](https://img.shields.io/pypi/v/mcp-modal.svg)](https://pypi.org/project/mcp-modal/)
 
 An MCP server for managing [Modal](https://modal.com) — apps, containers, volumes, and secrets — and for deploying & running Modal apps directly from [Claude Code](https://docs.claude.com/en/docs/claude-code) and other MCP clients.
