@@ -24,9 +24,9 @@ jobs:
       id-token: write   # OIDC: mint a short-lived PyPI token, no secret needed
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v6
       - name: Build sdist + wheel
         run: uv build
       - name: Publish to PyPI
@@ -40,7 +40,7 @@ jobs:
       id-token: write   # OIDC: authenticate mcp-publisher as this repo
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install mcp-publisher
         run: |
           set -euo pipefail

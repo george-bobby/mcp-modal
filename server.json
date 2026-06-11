@@ -7,13 +7,13 @@
     "url": "https://github.com/george-bobby/mcp-modal",
     "source": "github"
   },
-  "version": "0.2.3",
+  "version": "0.2.4",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "mcp-modal",
-      "version": "0.2.3",
+      "version": "0.2.4",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
