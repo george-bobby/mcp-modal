@@ -1,0 +1,59 @@
+name: Publish
+
+# Releases mcp-modal to PyPI and the MCP Registry with NO stored secrets.
+# Authentication is done entirely via GitHub Actions OIDC:
+#   - PyPI uses Trusted Publishing (configured at pypi.org for this repo +
+#     workflow `publish.yml` + environment `release`).
+#   - The MCP Registry uses `mcp-publisher login github-oidc`.
+#
+# Trigger by pushing a version tag (`git tag vX.Y.Z && git push --follow-tags`)
+# or by running it manually from the Actions tab (workflow_dispatch) — handy for a
+# tag that was pushed before this workflow existed.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  pypi:
+    name: Publish to PyPI (Trusted Publishing)
+    runs-on: ubuntu-latest
+    # Must match the "Environment name" set in the PyPI trusted-publisher config.
+    environment: release
+    permissions:
+      id-token: write   # OIDC: mint a short-lived PyPI token, no secret needed
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Build sdist + wheel
+        run: uv build
+      - name: Publish to PyPI
+        run: uv publish --trusted-publishing always
+
+  registry:
+    name: Publish to MCP Registry (OIDC)
+    needs: pypi   # the registry validates that the PyPI version is already live
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # OIDC: authenticate mcp-publisher as this repo
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install mcp-publisher
+        run: |
+          set -euo pipefail
+          url=$(curl -fsSL https://api.github.com/repos/modelcontextprotocol/registry/releases/latest \
+            | grep -oE 'https://[^"]*linux[_-]amd64\.tar\.gz' | head -1)
+          test -n "$url" || { echo "Could not find a linux/amd64 mcp-publisher asset"; exit 1; }
+          echo "Downloading $url"
+          curl -fsSL "$url" -o mcp-publisher.tar.gz
+          tar -xzf mcp-publisher.tar.gz mcp-publisher
+          ./mcp-publisher --version
+      - name: Authenticate via GitHub OIDC
+        run: ./mcp-publisher login github-oidc
+      - name: Publish server.json
+        run: ./mcp-publisher publish

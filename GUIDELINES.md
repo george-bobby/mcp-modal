@@ -5,18 +5,45 @@ sync: [PyPI](https://pypi.org/project/mcp-modal/) (the package), the
 [MCP Registry](https://registry.modelcontextprotocol.io) (`server.json`), and
 [Glama](https://glama.ai/mcp/servers/george-bobby/mcp-modal) (auto-indexed from GitHub).
 
-> One-time setup (PyPI token, `brew install mcp-publisher`, claiming the Glama listing) is
-> already done and intentionally not repeated here.
+> One-time setup (the PyPI trusted publisher, the GitHub `release` environment, claiming the
+> Glama listing) is already done and intentionally not repeated here — see
+> [Automated publishing](#automated-publishing-recommended) for what that setup is.
 
 ## TL;DR — the full release
 
+Publishing is automated. Just bump the version and push a tag — GitHub Actions does PyPI and
+the MCP Registry; Glama re-indexes from the push:
+
 ```bash
-# 1. bump version in the 3 files below, then:
-rm -rf dist && uv build      # build sdist + wheel into dist/
-uv publish                   # → PyPI
-mcp-publisher publish        # → MCP Registry (run `mcp-publisher login github` first if expired)
-git commit -am "release vX.Y.Z" && git tag vX.Y.Z && git push --follow-tags   # → Glama re-indexes
+# bump the version in the 3 spots below, then:
+git commit -am "Release vX.Y.Z: …" && git tag vX.Y.Z && git push --follow-tags
 ```
+
+The [`.github/workflows/publish.yml`](.github/workflows/publish.yml) workflow fires on the
+`vX.Y.Z` tag, builds with `uv`, and publishes to **PyPI** (Trusted Publishing / OIDC) and the
+**MCP Registry** (`mcp-publisher login github-oidc`) — no tokens stored anywhere. You can also
+run it manually from the **Actions → Publish → Run workflow** button (`workflow_dispatch`),
+which is what you do for a tag that was pushed before the workflow existed.
+
+The manual `uv publish` / `mcp-publisher publish` commands below remain valid as a fallback.
+
+---
+
+## Automated publishing (recommended)
+
+`.github/workflows/publish.yml` releases to PyPI and the MCP Registry on every `v*` tag (or
+manual dispatch), authenticating entirely through GitHub Actions OIDC. The one-time setup it
+depends on:
+
+1. **PyPI Trusted Publishing** — at
+   [pypi.org/manage/project/mcp-modal/settings/publishing](https://pypi.org/manage/project/mcp-modal/settings/publishing/),
+   add a publisher with: owner `george-bobby`, repository `mcp-modal`, workflow `publish.yml`,
+   environment `release`.
+2. **GitHub `release` environment** — repo **Settings → Environments → New environment** named
+   `release` (add reviewers/branch limits here if you want a manual gate before publishing).
+
+With those in place, a tag push (or manual run) publishes both registries. The `registry` job
+`needs: pypi`, so the MCP Registry is only updated after the PyPI version is live.
 
 ---
 
