@@ -22,8 +22,6 @@ mcp = FastMCP("modal-deploy")
 
 # Matches http(s) URLs in CLI output so we can surface deployment / web-endpoint links.
 _URL_RE = re.compile(r"https?://[^\s'\"<>]+")
-# Matches a `KEY=VALUE` secret pair (but not CLI flags like `--force`).
-_KEYVALUE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
 def _uv_prefixed(command: List[str], uv_directory: Optional[str]) -> List[str]:
@@ -44,6 +42,63 @@ def _add_env(command: List[str], env: Optional[str]) -> List[str]:
     return command
 
 
+def _redact_text(text: Optional[str], secrets: Optional[List[str]]) -> Optional[str]:
+    """Replace every occurrence of each secret value in `text` with "***".
+
+    Used so secret values passed to `modal secret create` never surface in the logged
+    command, the echoed `command` field, or any captured stdout/stderr/error. Empty
+    values are skipped (replacing "" would corrupt the whole string); all other values
+    are redacted regardless of length — over-redaction is safe, under-redaction is not.
+    """
+    if not text or not secrets:
+        return text
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "***")
+    return text
+
+
+# Opt-in allowlist for the LOCAL paths that volume put/get may read from / write to.
+# Unset (the default) means no restriction — fully backward compatible. When set to an
+# os.pathsep-separated list of directories, a local path must resolve inside one of them
+# or the operation is refused. This blunts the confused-deputy risk where a prompt-injected
+# client uses put (to exfiltrate ~/.ssh/id_rsa) or get --force (to overwrite ~/.zshrc).
+_ALLOWED_PATHS_ENV = "MCP_MODAL_ALLOWED_LOCAL_PATHS"
+
+
+def _allowed_local_roots() -> Optional[List[str]]:
+    """Parse the allowlist env var into resolved root dirs, or None if unset/empty."""
+    raw = os.environ.get(_ALLOWED_PATHS_ENV)
+    if not raw or not raw.strip():
+        return None
+    roots = [
+        os.path.realpath(os.path.expanduser(p))
+        for p in raw.split(os.pathsep)
+        if p.strip()
+    ]
+    return roots or None
+
+
+def _check_local_path(path: str) -> Optional[str]:
+    """Return an error string if `path` is outside the allowlist, else None.
+
+    No-op (returns None) when the allowlist is not configured, so behavior is unchanged
+    unless an operator opts in via MCP_MODAL_ALLOWED_LOCAL_PATHS. realpath resolves both
+    `..` traversal and symlinks before the prefix check.
+    """
+    roots = _allowed_local_roots()
+    if roots is None:
+        return None
+    resolved = os.path.realpath(os.path.expanduser(path))
+    for root in roots:
+        if resolved == root or resolved.startswith(root + os.sep):
+            return None
+    return (
+        f"Local path {path!r} is outside the allowed roots configured in "
+        f"{_ALLOWED_PATHS_ENV}. Allowed roots: {roots}"
+    )
+
+
 def extract_urls(*texts: Optional[str]) -> List[str]:
     """Collect unique http(s) URLs from CLI output (deployment / web-endpoint links)."""
     urls: List[str] = []
@@ -57,30 +112,42 @@ def extract_urls(*texts: Optional[str]) -> List[str]:
     return urls
 
 
-def run_modal_command(command: List[str], uv_directory: Optional[str] = None) -> Dict[str, Any]:
-    """Run a Modal CLI command to completion and return the result."""
+def run_modal_command(
+    command: List[str],
+    uv_directory: Optional[str] = None,
+    redact: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Run a Modal CLI command to completion and return the result.
+
+    `redact`, if given, is a list of secret values scrubbed from the logged command and
+    from every returned text field (command/stdout/stderr/error) — see _redact_text.
+    """
     try:
         command = _uv_prefixed(command, uv_directory)
-        logger.info(f"Running command: {' '.join(command)}")
+        command_str = ' '.join(command)
+        logger.info(f"Running command: {_redact_text(command_str, redact)}")
+        # stdin is closed so a CLI that unexpectedly prompts (e.g. an auth flow on an
+        # unconfigured host) fails fast on EOF instead of hanging this blocking call.
         result = subprocess.run(
             command,
             capture_output=True,
             text=True,
-            check=True
+            check=True,
+            stdin=subprocess.DEVNULL,
         )
         return {
             "success": True,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "command": ' '.join(command)
+            "stdout": _redact_text(result.stdout, redact),
+            "stderr": _redact_text(result.stderr, redact),
+            "command": _redact_text(command_str, redact),
         }
     except subprocess.CalledProcessError as e:
         return {
             "success": False,
-            "error": str(e),
-            "stdout": e.stdout,
-            "stderr": e.stderr,
-            "command": ' '.join(command)
+            "error": _redact_text(str(e), redact),
+            "stdout": _redact_text(e.stdout, redact),
+            "stderr": _redact_text(e.stderr, redact),
+            "command": _redact_text(command_str, redact),
         }
 
 
@@ -96,6 +163,7 @@ def run_modal_streaming_command(
     full_command = _uv_prefixed(command, uv_directory)
     proc = subprocess.Popen(
         full_command,
+        stdin=subprocess.DEVNULL,  # never block on an unexpected interactive prompt
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -168,6 +236,12 @@ def standardize_result(
     return response
 
 
+# Longest slice of any single line actually fed to the regex engine. Caller-supplied
+# regexes can backtrack catastrophically on long inputs; matching line-by-line against a
+# bounded slice keeps worst-case work finite. The full line is still shown in output.
+_MAX_SCAN_WIDTH = 16384
+
+
 def grep_lines(
     text: str,
     pattern: str,
@@ -190,7 +264,9 @@ def grep_lines(
         return None, f"Invalid regex pattern: {e}"
 
     lines = text.splitlines()
-    match_indices = [i for i, line in enumerate(lines) if compiled.search(line)]
+    match_indices = [
+        i for i, line in enumerate(lines) if compiled.search(line[:_MAX_SCAN_WIDTH])
+    ]
     total = len(match_indices)
     shown = match_indices[:max_matches]
     matched = set(match_indices)  # mark every real match, even inside another's window
@@ -230,7 +306,7 @@ def filter_log_lines(
         return None, f"Invalid exclude pattern: {e}"
 
     lines = text.splitlines()
-    kept = [line for line in lines if not compiled.search(line)]
+    kept = [line for line in lines if not compiled.search(line[:_MAX_SCAN_WIDTH])]
     return "\n".join(kept), len(lines) - len(kept)
 
 
@@ -267,7 +343,7 @@ async def deploy_modal_app(
     uv_directory = os.path.dirname(absolute_path_to_app)
     app_name = os.path.basename(absolute_path_to_app)
     try:
-        command = ["modal", "deploy", app_name]
+        command = ["modal", "deploy"]
         if name:
             command.extend(["--name", name])
         if tag:
@@ -277,6 +353,9 @@ async def deploy_modal_app(
         if stream_logs:
             command.append("--stream-logs")
         _add_env(command, env)
+        # `--` ends option parsing so an app filename starting with `-` can't be
+        # misread as a CLI flag (option injection).
+        command.extend(["--", app_name])
 
         result = run_modal_command(command, uv_directory)
         urls = extract_urls(result.get("stdout"), result.get("stderr"))
@@ -321,8 +400,9 @@ async def run_modal_app(
         command = ["modal", "run"]
         if detach:
             command.append("--detach")
-        command.append(func_ref)
         _add_env(command, env)
+        # `--` ends option parsing so a func ref starting with `-` can't be misread as a flag.
+        command.extend(["--", func_ref])
 
         result = run_modal_streaming_command(command, timeout_seconds, uv_directory)
         failed = result["returncode"] not in (0, None) and not result["timed_out"]
@@ -434,7 +514,7 @@ async def get_modal_app_logs(
         active at the timeout (i.e. logs are a partial snapshot).
     """
     try:
-        command = ["modal", "app", "logs", app_identifier]
+        command = ["modal", "app", "logs"]
         if follow:
             command.append("-f")
         if timestamps:
@@ -450,6 +530,7 @@ async def get_modal_app_logs(
         if source:
             command.extend(["--source", source])
         _add_env(command, env)
+        command.extend(["--", app_identifier])
 
         result = run_modal_streaming_command(command, timeout_seconds)
 
@@ -503,8 +584,9 @@ async def stop_modal_app(app_identifier: str, env: Optional[str] = None) -> Dict
     """
     try:
         # `-y` avoids the interactive confirmation prompt, which would hang with no TTY.
-        command = ["modal", "app", "stop", "-y", app_identifier]
+        command = ["modal", "app", "stop", "-y"]
         _add_env(command, env)
+        command.extend(["--", app_identifier])
         result = run_modal_command(command)
         return standardize_result(
             result, f"Successfully stopped app {app_identifier}", "Failed to stop app"
@@ -531,10 +613,11 @@ async def rollback_modal_app(
         A dictionary containing the result of the rollback operation.
     """
     try:
-        command = ["modal", "app", "rollback", app_identifier]
+        command = ["modal", "app", "rollback"]
+        _add_env(command, env)
+        command.extend(["--", app_identifier])
         if version:
             command.append(str(version))
-        _add_env(command, env)
         result = run_modal_command(command)
         return standardize_result(
             result, f"Successfully rolled back app {app_identifier}", "Failed to roll back app"
@@ -559,8 +642,9 @@ async def get_modal_app_history(app_identifier: str, env: Optional[str] = None) 
         A dictionary containing the parsed JSON deployment history.
     """
     try:
-        command = ["modal", "app", "history", "--json", app_identifier]
+        command = ["modal", "app", "history", "--json"]
         _add_env(command, env)
+        command.extend(["--", app_identifier])
         result = run_modal_command(command)
         response = handle_json_response(result, "Failed to get app history")
         if response["success"]:
@@ -638,7 +722,7 @@ async def get_modal_container_logs(
         off at the timeout.
     """
     try:
-        command = ["modal", "container", "logs", container_id]
+        command = ["modal", "container", "logs"]
         if follow:
             command.append("-f")
         if timestamps:
@@ -653,6 +737,7 @@ async def get_modal_container_logs(
             command.extend(["--search", search])
         if source:
             command.extend(["--source", source])
+        command.extend(["--", container_id])
 
         result = run_modal_streaming_command(command, timeout_seconds)
         failed = result["returncode"] not in (0, None) and not result["timed_out"]
@@ -708,7 +793,10 @@ async def exec_modal_container(
         return {"success": False, "error": "A non-empty command list is required"}
     try:
         # `--no-pty` avoids allocating a PTY, which isn't available in this subprocess.
-        full_command = ["modal", "container", "exec", "--no-pty", container_id] + command
+        # `--` ends modal's own option parsing: it protects `container_id` from option
+        # injection AND lets the user command carry its own flags (e.g. `ls -la`) without
+        # modal trying to interpret them.
+        full_command = ["modal", "container", "exec", "--no-pty", "--", container_id] + command
         result = run_modal_streaming_command(full_command, timeout_seconds)
         failed = result["returncode"] not in (0, None) and not result["timed_out"]
         response = {
@@ -744,7 +832,7 @@ async def stop_modal_container(container_id: str) -> Dict[str, Any]:
     """
     try:
         # `-y` avoids the interactive confirmation prompt.
-        result = run_modal_command(["modal", "container", "stop", "-y", container_id])
+        result = run_modal_command(["modal", "container", "stop", "-y", "--", container_id])
         return standardize_result(
             result, f"Successfully stopped container {container_id}", "Failed to stop container"
         )
@@ -821,11 +909,16 @@ async def search_modal_logs(
         return {"success": False, "error": "target must be 'app' or 'container'"}
     if not pattern:
         return {"success": False, "error": "A non-empty search pattern is required"}
+    if len(pattern) > _MAX_SCAN_WIDTH:
+        return {"success": False, "error": f"Pattern too long (max {_MAX_SCAN_WIDTH} chars)"}
     if source is not None and source not in ("stdout", "stderr", "system"):
         return {"success": False, "error": "source must be 'stdout', 'stderr', or 'system'"}
+    # Clamp to sane bounds so a huge value can't blow up memory or output size.
+    context_lines = max(0, min(context_lines, 100))
+    max_matches = max(1, min(max_matches, 1000))
     try:
         subcommand = "app" if target == "app" else "container"
-        command = ["modal", subcommand, "logs", identifier]
+        command = ["modal", subcommand, "logs"]
         if timestamps:
             command.append("--timestamps")
         if source:
@@ -839,6 +932,7 @@ async def search_modal_logs(
             command.extend(["--tail", "1000"])
         if target == "app":
             _add_env(command, env)
+        command.extend(["--", identifier])
 
         result = run_modal_streaming_command(command, timeout_seconds)
         failed = result["returncode"] not in (0, None) and not result["timed_out"]
@@ -945,7 +1039,7 @@ async def list_modal_volume_contents(volume_name: str, path: str = "/") -> Dict[
         directory distinguishable from a path-format mistake or a missing volume.
     """
     try:
-        result = run_modal_command(["modal", "volume", "ls", "--json", volume_name, path])
+        result = run_modal_command(["modal", "volume", "ls", "--json", "--", volume_name, path])
         response = handle_json_response(result, "Failed to list volume contents")
         if not response["success"]:
             return response
@@ -996,7 +1090,7 @@ async def copy_modal_volume_files(volume_name: str, paths: List[str]) -> Dict[st
         }
 
     try:
-        result = run_modal_command(["modal", "volume", "cp", volume_name] + paths)
+        result = run_modal_command(["modal", "volume", "cp", "--", volume_name] + paths)
         return standardize_result(
             result, f"Successfully copied files in volume {volume_name}", "Failed to copy files"
         )
@@ -1022,7 +1116,7 @@ async def remove_modal_volume_file(volume_name: str, remote_path: str, recursive
         command = ["modal", "volume", "rm"]
         if recursive:
             command.append("-r")
-        command.extend([volume_name, remote_path])
+        command.extend(["--", volume_name, remote_path])
 
         result = run_modal_command(command)
         return standardize_result(
@@ -1048,13 +1142,18 @@ async def put_modal_volume_file(volume_name: str, local_path: str, remote_path: 
         force: If True, overwrite existing files. Defaults to False.
 
     Returns:
-        A dictionary containing the result of the upload operation.
+        A dictionary containing the result of the upload operation. If the optional
+        MCP_MODAL_ALLOWED_LOCAL_PATHS allowlist is set and `local_path` falls outside it,
+        the upload is refused before any data leaves the host.
     """
+    denied = _check_local_path(local_path)
+    if denied:
+        return {"success": False, "error": denied}
     try:
         command = ["modal", "volume", "put"]
         if force:
             command.append("-f")
-        command.extend([volume_name, local_path, remote_path])
+        command.extend(["--", volume_name, local_path, remote_path])
 
         result = run_modal_command(command)
         return standardize_result(
@@ -1080,13 +1179,20 @@ async def get_modal_volume_file(volume_name: str, remote_path: str, local_destin
         force: If True, overwrite existing files. Defaults to False.
 
     Returns:
-        A dictionary containing the result of the download operation.
+        A dictionary containing the result of the download operation. If the optional
+        MCP_MODAL_ALLOWED_LOCAL_PATHS allowlist is set and `local_destination` falls
+        outside it, the download is refused (the special "-" stdout target is exempt).
     """
+    # "-" streams to stdout (no file is written), so it bypasses the path allowlist.
+    if local_destination != "-":
+        denied = _check_local_path(local_destination)
+        if denied:
+            return {"success": False, "error": denied}
     try:
         command = ["modal", "volume", "get"]
         if force:
             command.append("--force")
-        command.extend([volume_name, remote_path, local_destination])
+        command.extend(["--", volume_name, remote_path, local_destination])
 
         result = run_modal_command(command)
         return standardize_result(
@@ -1116,8 +1222,9 @@ async def create_modal_volume(volume_name: str, env: Optional[str] = None) -> Di
         A dictionary containing the result of the create operation.
     """
     try:
-        command = ["modal", "volume", "create", volume_name]
+        command = ["modal", "volume", "create"]
         _add_env(command, env)
+        command.extend(["--", volume_name])
         result = run_modal_command(command)
         return standardize_result(
             result, f"Successfully created volume {volume_name}", "Failed to create volume"
@@ -1144,8 +1251,9 @@ async def delete_modal_volume(volume_name: str, env: Optional[str] = None) -> Di
     """
     try:
         # `-y` avoids the interactive confirmation prompt.
-        command = ["modal", "volume", "delete", "-y", volume_name]
+        command = ["modal", "volume", "delete", "-y"]
         _add_env(command, env)
+        command.extend(["--", volume_name])
         result = run_modal_command(command)
         return standardize_result(
             result, f"Successfully deleted volume {volume_name}", "Failed to delete volume"
@@ -1170,8 +1278,9 @@ async def rename_modal_volume(old_name: str, new_name: str, env: Optional[str] =
     """
     try:
         # `-y` avoids the interactive confirmation prompt.
-        command = ["modal", "volume", "rename", "-y", old_name, new_name]
+        command = ["modal", "volume", "rename", "-y"]
         _add_env(command, env)
+        command.extend(["--", old_name, new_name])
         result = run_modal_command(command)
         return standardize_result(
             result, f"Successfully renamed volume {old_name} to {new_name}", "Failed to rename volume"
@@ -1241,9 +1350,7 @@ async def create_modal_secret(
             "error": "Provide key_values, from_dotenv, or from_json to create a secret",
         }
     try:
-        command = ["modal", "secret", "create", secret_name]
-        if key_values:
-            command.extend([f"{k}={v}" for k, v in key_values.items()])
+        command = ["modal", "secret", "create"]
         if from_dotenv:
             command.extend(["--from-dotenv", from_dotenv])
         if from_json:
@@ -1251,13 +1358,18 @@ async def create_modal_secret(
         if force:
             command.append("--force")
         _add_env(command, env)
+        # `--` ends option parsing; the name and KEY=VALUE pairs follow as positionals.
+        command.append("--")
+        command.append(secret_name)
+        if key_values:
+            command.extend([f"{k}={v}" for k, v in key_values.items()])
 
-        result = run_modal_command(command)
-        # Redact KEY=VALUE pairs so secret values never appear in the returned command.
-        result["command"] = ' '.join(
-            re.sub(r"=.*", "=***", part) if _KEYVALUE_RE.match(part) else part
-            for part in result["command"].split(' ')
-        )
+        # Pass the secret values to the runner so they are scrubbed from the logged
+        # command AND from every returned field (command/stdout/stderr/error) — not just
+        # the happy-path command string. A failed create (e.g. secret exists, no --force)
+        # would otherwise echo the plaintext values back in the error.
+        secret_values = list(key_values.values()) if key_values else None
+        result = run_modal_command(command, redact=secret_values)
         return standardize_result(
             result, f"Successfully created secret {secret_name}", "Failed to create secret"
         )
@@ -1280,8 +1392,9 @@ async def delete_modal_secret(secret_name: str, env: Optional[str] = None) -> Di
     """
     try:
         # `-y` avoids the interactive confirmation prompt.
-        command = ["modal", "secret", "delete", "-y", secret_name]
+        command = ["modal", "secret", "delete", "-y"]
         _add_env(command, env)
+        command.extend(["--", secret_name])
         result = run_modal_command(command)
         return standardize_result(
             result, f"Successfully deleted secret {secret_name}", "Failed to delete secret"

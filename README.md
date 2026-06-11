@@ -57,6 +57,53 @@ To pin a specific release, use `uvx mcp-modal@0.2.0`.
   - The project being deployed/run must use `uv` for dependency management
   - `modal` must be installed in that project's virtual environment
 
+## Security
+
+This server shells out to your local `modal` CLI using whatever credentials are in
+`~/.modal.toml`. A few tools are powerful by design — if the MCP client driving the server
+is ever prompt-injected (for example by malicious text inside logs it fetched), these are
+the escalation paths and should stay **behind your client's tool-approval prompts** rather
+than being auto-approved:
+
+- **`deploy_modal_app` / `run_modal_app`** — execute arbitrary local Python on the host
+  (`modal deploy` imports the app file; `uv run` resolves and installs the target project's
+  dependencies).
+- **`put_modal_volume_file`** — can read any local file (e.g. `~/.ssh/id_rsa`, `~/.modal.toml`)
+  and upload it to a cloud volume (a data-exfiltration primitive).
+- **`get_modal_volume_file`** with `force=True` — can overwrite any local path (e.g. `~/.zshrc`
+  or a shell profile, a persistence primitive).
+- **`exec_modal_container`** — runs arbitrary commands inside a container, by design.
+
+### Optional local-path allowlist
+
+To contain the two filesystem-touching volume tools, set the
+`MCP_MODAL_ALLOWED_LOCAL_PATHS` environment variable to an
+[`os.pathsep`](https://docs.python.org/3/library/os.html#os.pathsep)-separated list of
+directories (`:` on macOS/Linux). When it is set, `put_modal_volume_file` (its `local_path`)
+and `get_modal_volume_file` (its `local_destination`) are refused unless the resolved path —
+after expanding `~` and collapsing `..`/symlinks — falls inside one of those roots. The
+download target `"-"` (stream to stdout) is exempt because nothing is written to disk.
+
+When the variable is **unset (the default) there is no restriction**, so existing setups are
+unaffected. Configure it in your MCP client, e.g.:
+
+```json
+{
+  "mcpServers": {
+    "mcp-modal": {
+      "command": "uvx",
+      "args": ["mcp-modal"],
+      "env": { "MCP_MODAL_ALLOWED_LOCAL_PATHS": "/Users/me/modal-workspace:/tmp/modal" }
+    }
+  }
+}
+```
+
+All tools also pass user-supplied names/paths after a `--` end-of-options separator, so a
+value beginning with `-` is always treated as data, never as a `modal` CLI flag. Secret
+values handed to `create_modal_secret` are redacted from the echoed command, logs, and any
+error output.
+
 ## Supported Tools
 
 26 tools, grouped by area. Account-scoped tools accept an optional `env` argument to
