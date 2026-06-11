@@ -5,8 +5,8 @@ sync: [PyPI](https://pypi.org/project/mcp-modal/) (the package), the
 [MCP Registry](https://registry.modelcontextprotocol.io) (`server.json`), and
 [Glama](https://glama.ai/mcp/servers/george-bobby/mcp-modal) (auto-indexed from GitHub).
 
-> One-time setup (the PyPI trusted publisher, the GitHub `release` environment, claiming the
-> Glama listing) is already done and intentionally not repeated here — see
+> One-time setup (the PyPI trusted publisher, claiming the Glama listing) is already done and
+> intentionally not repeated here — see
 > [Automated publishing](#automated-publishing-recommended) for what that setup is.
 
 ## TL;DR — the full release
@@ -35,14 +35,15 @@ The manual `uv publish` / `mcp-publisher publish` commands below remain valid as
 manual dispatch), authenticating entirely through GitHub Actions OIDC. The one-time setup it
 depends on:
 
-1. **PyPI Trusted Publishing** — at
-   [pypi.org/manage/project/mcp-modal/settings/publishing](https://pypi.org/manage/project/mcp-modal/settings/publishing/),
-   add a publisher with: owner `george-bobby`, repository `mcp-modal`, workflow `publish.yml`,
-   environment `release`.
-2. **GitHub `release` environment** — repo **Settings → Environments → New environment** named
-   `release` (add reviewers/branch limits here if you want a manual gate before publishing).
+- **PyPI Trusted Publishing** — at
+  [pypi.org/manage/project/mcp-modal/settings/publishing](https://pypi.org/manage/project/mcp-modal/settings/publishing/),
+  add a publisher with: owner `george-bobby`, repository `mcp-modal`, workflow `publish.yml`,
+  and **leave the environment field blank** (the workflow runs in the default context — no
+  GitHub environment to create). If you later want a manual approval gate before each publish,
+  create a GitHub environment, put its name in both the PyPI publisher and the `pypi` job's
+  `environment:` key.
 
-With those in place, a tag push (or manual run) publishes both registries. The `registry` job
+With that in place, a tag push (or manual run) publishes both registries. The `registry` job
 `needs: pypi`, so the MCP Registry is only updated after the PyPI version is live.
 
 ---

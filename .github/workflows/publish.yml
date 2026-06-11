@@ -3,7 +3,7 @@ name: Publish
 # Releases mcp-modal to PyPI and the MCP Registry with NO stored secrets.
 # Authentication is done entirely via GitHub Actions OIDC:
 #   - PyPI uses Trusted Publishing (configured at pypi.org for this repo +
-#     workflow `publish.yml` + environment `release`).
+#     workflow `publish.yml`, with no GitHub environment).
 #   - The MCP Registry uses `mcp-publisher login github-oidc`.
 #
 # Trigger by pushing a version tag (`git tag vX.Y.Z && git push --follow-tags`)
@@ -20,8 +20,6 @@ jobs:
   pypi:
     name: Publish to PyPI (Trusted Publishing)
     runs-on: ubuntu-latest
-    # Must match the "Environment name" set in the PyPI trusted-publisher config.
-    environment: release
     permissions:
       id-token: write   # OIDC: mint a short-lived PyPI token, no secret needed
       contents: read
