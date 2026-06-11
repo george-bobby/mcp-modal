@@ -16,8 +16,12 @@ the MCP Registry; Glama re-indexes from the push:
 
 ```bash
 # bump the version in the 3 spots below, then:
-git commit -am "Release vX.Y.Z: …" && git tag vX.Y.Z && git push --follow-tags
+git commit -am "Release vX.Y.Z: …" && git tag -a vX.Y.Z -m "vX.Y.Z" && git push --follow-tags
 ```
+
+> Use an **annotated** tag (`git tag -a`). `git push --follow-tags` only pushes annotated
+> tags — a lightweight `git tag vX.Y.Z` would stay local and the workflow would never fire.
+> (Or push the tag explicitly: `git push origin vX.Y.Z`.)
 
 The [`.github/workflows/publish.yml`](.github/workflows/publish.yml) workflow fires on the
 `vX.Y.Z` tag, builds with `uv`, and publishes to **PyPI** (Trusted Publishing / OIDC) and the
@@ -86,8 +90,8 @@ Glama re-indexes from the GitHub repo automatically — there's no separate publ
 Just push to `main`:
 
 ```bash
-git commit -am "release vX.Y.Z" && git tag vX.Y.Z
-git push --follow-tags
+git commit -am "release vX.Y.Z" && git tag -a vX.Y.Z -m "vX.Y.Z"
+git push --follow-tags   # --follow-tags only pushes annotated tags; use `git tag -a`
 ```
 
 [glama.json](glama.json) only needs editing when maintainers change. If the listing looks
