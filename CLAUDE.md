@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-`mcp-modal` is an MCP (Model Context Protocol) server that exposes 10 tools and 3 prompts for managing Modal (apps, containers, volumes, secrets) and for deploying/running Modal apps. It is published to PyPI as `mcp-modal` and is meant to be launched by MCP clients via `uvx mcp-modal`.
+`mcp-modal` is an MCP (Model Context Protocol) server that exposes 12 tools and 4 prompts for managing Modal (apps, containers, volumes, secrets) and for deploying/running Modal apps. It is published to PyPI as `mcp-modal` and is meant to be launched by MCP clients via `uvx mcp-modal`.
 
 ## Common commands
 
@@ -28,15 +28,15 @@ There is **no test suite, linter config, or CI** in this repo. Don't claim a cha
 
 ## Architecture
 
-The whole server is one file: `src/mcp_modal/server.py` (~1300 lines, 10 `@mcp.tool()` functions plus 3 `@mcp.prompt()` functions). Everything else is packaging.
+The whole server is one file: `src/mcp_modal/server.py` (~1900 lines, 12 `@mcp.tool()` functions plus 4 `@mcp.prompt()` functions). Everything else is packaging.
 
-### Tool grouping (why there are 10 tools, not 26)
+### Tool grouping (why there are 12 tools, not 28)
 
 Every tool schema is loaded into the client's context for the entire session, so the tool surface is a standing token cost and a standing "which of these near-identical tools do I want?" problem for the model. Related CLI subcommands are therefore grouped behind an `action`/`resource` argument:
 
 - `list_modal_resources(resource=...)` — every read-only lookup (apps, app_history, containers, volumes, volume_files, secrets, environments, profile).
 - `manage_modal_app` (stop/rollback), `manage_modal_container` (exec/stop), `manage_modal_volume` (create/delete/rename), `modal_volume_files` (put/get/cp/rm), `manage_modal_secret` (create/delete).
-- `deploy_modal_app`, `run_modal_app`, `get_modal_logs`, `search_modal_logs` keep their own tools — distinct enough that folding them in would only make the schemas harder to read.
+- `deploy_modal_app`, `run_modal_app`, `get_modal_logs`, `search_modal_logs`, `analyze_modal_costs`, `inspect_modal_secret` keep their own tools — distinct enough that folding them in would only make the schemas harder to read.
 
 Prefer adding an `action` to an existing group over adding an 11th tool. Every grouped tool validates its `action` up front and returns a `{"success": False, "error": ...}` naming the valid values; keep that pattern, and keep docstrings terse — the docstring *is* the schema description the model pays for.
 
@@ -81,6 +81,25 @@ The streaming runner is bounded by *time*, not volume, so a chatty app can emit 
 
 `extract_urls` scrubs http(s) links from stdout+stderr so deploy/run tools can surface live web-endpoint URLs in a dedicated `urls` field — this is the main way clients discover what got deployed.
 
+### Cost analysis (`analyze_modal_costs`)
+
+Same shape as log search: fetch once, compute locally. `modal billing report --json` returns one flat row per (app, interval) — 1500+ rows for a week on a busy workspace — so the tool sums and ranks them itself rather than handing the caller arithmetic. `group_costs` aggregates by app/environment/resource/interval; `cost_movers` finds the most expensive interval and diffs it against the preceding one, which is what actually answers "why was Monday expensive". Costs are `Decimal` throughout: summing hundreds of 8-decimal strings as floats drifts.
+
+Two version landmines, both handled and both worth knowing before you touch this code:
+
+- **Column names change between clients.** modal 1.4.x emits Title Case with spaces (`"Object ID"`, `"Interval Start"`, `"Cost"`); 1.5+ emits snake_case. Reading one spelling silently yields a report full of zeros — the failure is invisible, not loud. Every field goes through `_row_field()` / `_COST_FIELD_ALIASES`; add both spellings when you add a field.
+- **`billing summary` and `billing rates` only exist in modal >= 1.5.** Older clients fail with a bare `Error: No such command`, which the tool turns into an upgrade hint. `pyproject.toml` pins `modal>=1.5` for this reason.
+
+Billing is workspace-wide: `modal billing report` accepts no `-e/--env`, so never route it through `_add_env` — the environment arrives as a row field and is filtered locally.
+
+### Secret key inspection (`inspect_modal_secret`)
+
+The one tool that spends money. Modal exposes secret key names nowhere — not the CLI, not `Secret.info()` (name/created_at/created_by only), not even the gRPC `SecretMetadata` message. The only route is to mount the secret in a container and list the environment, so this runs `modal shell --secret <name>` and subtracts `_BASE_ENV_NAMES` / `_BASE_ENV_PREFIXES` (captured from a real container, and covering the `MODAL_TOKEN_*` credentials that live there too).
+
+The probe string is fragile in a specific way: **`modal shell -c` shlex-splits the string, re-joins it with spaces, and runs it under `bash -c`.** Quotes do not survive, and unquoted parentheses are a bash syntax error — so a `python -c "..."` probe cannot work. Hence `compgen -e`, a bash builtin that prints exported variable *names* only, which also guarantees no value is printed even inside the container. If you change `_KEYS_PROBE`, it must contain no quotes and no shell metacharacters beyond `;`.
+
+Because it starts compute, it is annotated `_mutating(destructive=False)` and kept out of `list_modal_resources` — putting it there would break that tool's `readOnlyHint` promise.
+
 ### Log search (`search_modal_logs`)
 
 This is the only non-trivial bit of logic beyond shelling out. It fetches logs once (via the same streaming runner against `modal app logs` / `modal container logs`), then runs everything locally:
@@ -102,7 +121,7 @@ When adding a new action, follow the existing pattern: validate the action, buil
 
 ### Prompts
 
-Three `@mcp.prompt()` functions (`debug_modal_app`, `deploy_and_verify`, `review_modal_account`) return workflow text. Clients fetch prompts on demand, so they cost nothing in per-session tool schema — that makes them the right home for multi-step guidance (and for caveats like "dashboard crash events are not log lines") instead of repeating it in every tool description. Keep the tool names inside prompt text in sync when tools change.
+Four `@mcp.prompt()` functions (`debug_modal_app`, `deploy_and_verify`, `review_modal_account`, `investigate_modal_costs`) return workflow text. Clients fetch prompts on demand, so they cost nothing in per-session tool schema — that makes them the right home for multi-step guidance (and for caveats like "dashboard crash events are not log lines") instead of repeating it in every tool description. Keep the tool names inside prompt text in sync when tools change.
 
 ## Packaging notes
 

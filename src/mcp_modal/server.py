@@ -23,6 +23,7 @@ import os
 import re
 import signal
 from typing import Any, Optional, List, Dict, Tuple
+from decimal import Decimal, InvalidOperation
 import subprocess
 import json
 
@@ -105,9 +106,10 @@ def _redact_text(text: Optional[str], secrets: Optional[List[str]]) -> Optional[
     """
     if not text or not secrets:
         return text
-    for secret in secrets:
-        if secret:
-            text = text.replace(secret, "***")
+    # Longest first: if one value is a substring of another ("dummy" inside "dummy2"),
+    # replacing the short one first leaves the remainder ("***2") visible in the output.
+    for secret in sorted((s for s in secrets if s), key=len, reverse=True):
+        text = text.replace(secret, "***")
     return text
 
 
@@ -390,6 +392,150 @@ def json_listing(
             f"Showing the first {_MAX_LIST_ITEMS} entries; {omitted} more were omitted."
         )
     return out
+
+
+# ---------------------------------------------------------------------------
+# Cost aggregation
+# ---------------------------------------------------------------------------
+# `modal billing report --json` returns one flat row per (app, interval) — a busy
+# workspace easily produces hundreds. Summing and ranking them locally is the whole
+# point of the cost tool: the caller gets "which app cost what", not 400 raw rows to
+# add up itself. Costs are strings of decimal dollars; Decimal keeps the arithmetic
+# exact (floats drift once you sum hundreds of 8-decimal values).
+
+_COST_QUANTUM = Decimal("0.0001")
+
+
+def _to_cost(value: Any) -> Decimal:
+    """Parse a cost field into a Decimal, treating anything unparseable as zero."""
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal(0)
+
+
+def _fmt_cost(value: Decimal) -> str:
+    """Render a Decimal cost as a fixed 4-decimal string (dollars)."""
+    return str(value.quantize(_COST_QUANTUM))
+
+
+# `modal billing report --json` renames its columns between client versions: 1.4.x emits
+# Title Case with spaces ("Object ID", "Interval Start", "Cost"), 1.5+ emits snake_case
+# ("object_id", "interval_start", "cost"). Reading only one spelling silently produces a
+# report full of zeros, so every field is looked up through this alias table.
+_COST_FIELD_ALIASES = {
+    "object_id": ("object_id", "Object ID"),
+    "description": ("description", "Description"),
+    "environment": ("environment", "Environment"),
+    "interval_start": ("interval_start", "Interval Start"),
+    "resource": ("resource", "Resource"),
+    "cost": ("cost", "Cost"),
+}
+
+
+def _row_field(row: Dict[str, Any], field: str) -> Any:
+    """Read a billing-row field by its canonical name, whatever the client version calls it."""
+    for alias in _COST_FIELD_ALIASES.get(field, (field,)):
+        if alias in row:
+            return row[alias]
+    return None
+
+
+def _row_label(row: Dict[str, Any]) -> str:
+    """Human-facing name for a billing row: the app description, else its object id."""
+    return _row_field(row, "description") or _row_field(row, "object_id") or "(unknown)"
+
+
+def group_costs(
+    rows: List[Dict[str, Any]], key: str, top_n: int
+) -> Tuple[List[Dict[str, Any]], Decimal, int]:
+    """Sum costs by `key` ("app", "environment", "resource" or "interval_start").
+
+    Returns (groups, total, omitted). Groups are sorted most-expensive first, carry a
+    share of the total, and are cut to `top_n` — the total still reflects every row, so
+    the caller can see how much the visible rows account for.
+    """
+    totals: Dict[str, Decimal] = {}
+    for row in rows:
+        if key == "app":
+            label = _row_label(row)
+        else:
+            label = str(_row_field(row, key) or "(none)")
+        totals[label] = totals.get(label, Decimal(0)) + _to_cost(_row_field(row, "cost"))
+
+    total = sum(totals.values(), Decimal(0))
+    ordered = sorted(totals.items(), key=lambda kv: kv[1], reverse=True)
+    shown = ordered[:top_n] if top_n > 0 else ordered
+    groups = [
+        {
+            "name": name,
+            "cost": _fmt_cost(cost),
+            "share_pct": (
+                float((cost / total * 100).quantize(Decimal("0.1"))) if total else 0.0
+            ),
+        }
+        for name, cost in shown
+    ]
+    return groups, total, len(ordered) - len(shown)
+
+
+def cost_movers(
+    rows: List[Dict[str, Any]], top_n: int
+) -> Optional[Dict[str, Any]]:
+    """Explain the most expensive interval by diffing it against the one before.
+
+    This is what answers "why was Monday expensive?": find the peak interval, then rank
+    apps by how much MORE they cost then than in the preceding interval. Returns None
+    when there are fewer than two intervals to compare.
+    """
+    per_interval: Dict[str, Dict[str, Decimal]] = {}
+    for row in rows:
+        interval = str(_row_field(row, "interval_start") or "")
+        if not interval:
+            continue
+        per_interval.setdefault(interval, {})
+        label = _row_label(row)
+        bucket = per_interval[interval]
+        bucket[label] = bucket.get(label, Decimal(0)) + _to_cost(_row_field(row, "cost"))
+
+    intervals = sorted(per_interval)
+    if len(intervals) < 2:
+        return None
+
+    totals = {i: sum(per_interval[i].values(), Decimal(0)) for i in intervals}
+    peak = max(intervals, key=lambda i: totals[i])
+    peak_index = intervals.index(peak)
+    if peak_index == 0:
+        # The peak is the first interval, so there is nothing earlier to compare it
+        # with; fall back to the second interval so the diff is still meaningful.
+        peak, peak_index = intervals[1], 1
+    previous = intervals[peak_index - 1]
+
+    deltas = []
+    names = set(per_interval[peak]) | set(per_interval[previous])
+    for name in names:
+        now = per_interval[peak].get(name, Decimal(0))
+        before = per_interval[previous].get(name, Decimal(0))
+        deltas.append((name, now, before, now - before))
+    deltas.sort(key=lambda d: d[3], reverse=True)
+
+    return {
+        "peak_interval": peak,
+        "peak_cost": _fmt_cost(totals[peak]),
+        "compared_with": previous,
+        "compared_cost": _fmt_cost(totals[previous]),
+        "change": _fmt_cost(totals[peak] - totals[previous]),
+        "movers": [
+            {
+                "name": name,
+                "cost": _fmt_cost(now),
+                "previous_cost": _fmt_cost(before),
+                "change": _fmt_cost(delta),
+            }
+            for name, now, before, delta in deltas[:top_n]
+            if delta != 0
+        ],
+    }
 
 
 # Longest slice of any single line actually fed to the regex engine. Caller-supplied
@@ -1369,6 +1515,350 @@ async def manage_modal_secret(
 
 
 # ---------------------------------------------------------------------------
+# Costs
+# ---------------------------------------------------------------------------
+
+_COST_VIEWS = ("by_app", "timeline", "by_environment", "by_resource", "summary", "rates")
+
+
+@mcp.tool(annotations=_read_only("Analyze Modal costs"))
+async def analyze_modal_costs(
+    view: str = "by_app",
+    period: Optional[str] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    resolution: str = "d",
+    timezone: Optional[str] = None,
+    app: Optional[str] = None,
+    environment: Optional[str] = None,
+    top_n: int = 10,
+    tag_names: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Break down what the workspace is spending (`modal billing`). Costs are fetched once
+    and aggregated locally, so you get ranked totals and period-over-period changes
+    rather than hundreds of raw rows.
+
+    Answering common questions:
+      "what is my costliest app?"     -> view="by_app", period="this month"
+      "why was Monday expensive?"     -> view="timeline", period="last week" (the
+                                         `explanation` field diffs the peak day against
+                                         the day before and ranks which apps grew)
+      "what did that day cost hourly?" -> view="timeline", start="2026-08-31",
+                                          end="2026-09-01", resolution="h"
+      "where does the money go?"      -> view="by_resource" (CPU / GPU / memory / ...)
+      "what is the bill this cycle?"  -> view="summary"
+
+    Billing is workspace-wide, so this reports across every environment; use
+    `environment` to narrow it after the fact.
+
+    Args:
+        view: "by_app" (default), "timeline" (per interval, with an explanation of the
+            peak), "by_environment", "by_resource", "summary" (billed vs metered for a
+            month cycle), or "rates" (current unit prices).
+        period: Convenience range — "today", "yesterday", "this week", "last week",
+            "this month", "last month". For "summary" also accepts "YYYY-MM".
+        start / end: Explicit range instead of `period` — ISO dates ("2026-08-31") or
+            relative ("3 days ago"). Start is inclusive, end exclusive; end defaults to now.
+        resolution: "d" (daily, default) or "h" (hourly). Hourly is what you want when
+            drilling into a single day.
+        timezone: Timezone for interpreting dates — "local", an offset ("+05:30"), or an
+            IANA name. Requires resolution="h".
+        app: Only include apps whose name or ID contains this string (case-insensitive).
+        environment: Only include rows from this Modal environment.
+        top_n: How many groups/movers to return. Default 10.
+        tag_names: Comma-separated cost-attribution tag names to include.
+
+    Returns: {total_cost, groups | intervals, explanation (for timeline), row_count}.
+        Costs are strings of US dollars with 4 decimals. `total_cost` always covers every
+        row in range, even when `groups` is cut to top_n.
+    """
+    if view not in _COST_VIEWS:
+        return {
+            "success": False,
+            "error": f"Unknown view {view!r}. Valid values: {', '.join(_COST_VIEWS)}",
+        }
+    if resolution not in ("d", "h"):
+        return {"success": False, "error": "resolution must be 'd' (daily) or 'h' (hourly)"}
+    if timezone and resolution != "h":
+        return {"success": False, "error": "timezone requires resolution='h' (Modal's own constraint)"}
+    top_n = max(1, min(top_n, 200))
+
+    try:
+        if view == "rates":
+            rates = run_modal_command(["modal", "billing", "rates", "--json"])
+            if not rates["success"] and "No such command" in (rates.get("stderr") or ""):
+                return {
+                    "success": False,
+                    "error": (
+                        "This Modal client is too old for `billing rates` (it needs modal "
+                        ">= 1.5). Upgrade modal, or use view='by_app'/'timeline'."
+                    ),
+                    "command": rates["command"],
+                }
+            parsed = handle_json_response(rates, "Failed to get rates")
+            if not parsed["success"]:
+                return parsed
+            return {"success": True, "view": view, "rates": parsed["data"]}
+
+        if view == "summary":
+            command = ["modal", "billing", "summary", "--json"]
+            if period:
+                command.extend(["--for", period])
+            result = run_modal_command(command)
+            if not result["success"] and "No such command" in (result.get("stderr") or ""):
+                # `modal billing summary` and `rates` arrived in client 1.5; older clients
+                # only have `report`, and fail with a bare usage error.
+                return {
+                    "success": False,
+                    "error": (
+                        "This Modal client is too old for `billing summary` (it needs modal "
+                        ">= 1.5). Upgrade modal, or use view='by_app'/'timeline', which work "
+                        "on every supported client."
+                    ),
+                    "command": result["command"],
+                }
+            response = handle_json_response(result, "Failed to get billing summary")
+            if not response["success"]:
+                return response
+            return {"success": True, "view": view, "period": period or "this month", "summary": response["data"]}
+
+        command = ["modal", "billing", "report", "--json", "-r", resolution]
+        if period:
+            command.extend(["--for", period])
+        if start:
+            command.extend(["--start", start])
+        if end:
+            command.extend(["--end", end])
+        if timezone:
+            command.extend(["--tz", timezone])
+        if tag_names:
+            command.extend(["--tag-names", tag_names])
+        if view == "by_resource":
+            # The resource column (CPU / GPU type / memory / ...) only exists with this flag.
+            command.append("--show-resources")
+
+        result = run_modal_command(command)
+        response = handle_json_response(result, "Failed to get billing report")
+        if not response["success"]:
+            return response
+
+        rows = response["data"]
+        if not isinstance(rows, list):
+            return {"success": False, "error": "Unexpected billing report shape (expected a list of rows)"}
+
+        matched = len(rows)
+        if app:
+            needle = app.lower()
+            rows = [
+                r for r in rows
+                if needle in str(_row_field(r, "description") or "").lower()
+                or needle in str(_row_field(r, "object_id") or "").lower()
+            ]
+        if environment:
+            rows = [r for r in rows if str(_row_field(r, "environment") or "") == environment]
+
+        out: Dict[str, Any] = {
+            "success": True,
+            "view": view,
+            "range": period or {"start": start, "end": end},
+            "resolution": resolution,
+            "row_count": len(rows),
+            "command": result["command"],
+        }
+        if (app or environment) and len(rows) != matched:
+            out["rows_before_filter"] = matched
+        if not rows:
+            out["total_cost"] = "0.0000"
+            out["groups"] = []
+            out["message"] = (
+                "No billing rows in this range"
+                + (" after filtering" if app or environment else "")
+                + ". Widen the range with `period`/`start`, or drop the filters. Note that "
+                "Modal reports full intervals only, so a range shorter than one interval is empty."
+            )
+            return out
+
+        if view == "timeline":
+            groups, total, omitted = group_costs(rows, "interval_start", top_n=0)
+            # Timeline reads chronologically, not by size.
+            groups.sort(key=lambda g: g["name"])
+            out["intervals"] = groups
+            out["total_cost"] = _fmt_cost(total)
+            explanation = cost_movers(rows, top_n)
+            if explanation:
+                out["explanation"] = explanation
+                out["message"] = (
+                    f"Most expensive interval: {explanation['peak_interval']} at "
+                    f"${explanation['peak_cost']} ({explanation['change']} vs "
+                    f"{explanation['compared_with']}). `explanation.movers` ranks the apps "
+                    "by how much they grew between those two intervals."
+                )
+            else:
+                out["message"] = (
+                    "Only one interval in range, so there is nothing to compare it against. "
+                    "Widen `period`, or use resolution='h' to break a single day into hours."
+                )
+            return out
+
+        key = {"by_app": "app", "by_environment": "environment", "by_resource": "resource"}[view]
+        groups, total, omitted = group_costs(rows, key, top_n)
+        out["groups"] = groups
+        out["total_cost"] = _fmt_cost(total)
+        if omitted:
+            out["omitted_groups"] = omitted
+            out["message"] = (
+                f"Showing the top {len(groups)} of {len(groups) + omitted}; total_cost covers all of them."
+            )
+        return out
+    except Exception as e:
+        logger.error(f"Failed to analyze Modal costs: {e}")
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Secret inspection
+# ---------------------------------------------------------------------------
+
+# Environment variables that come from the container image or the Modal runtime rather
+# than from the mounted secret. Modal exposes no API for a secret's key names, so the only
+# way to see them is to mount the secret and list the container's environment — which
+# means subtracting the variables that would have been there anyway. The exact names below
+# were captured from a real container in Modal's default image (which also carries
+# MODAL_TOKEN_ID / MODAL_TOKEN_SECRET — filtered by the MODAL_ prefix, never returned).
+_BASE_ENV_NAMES = {
+    "BLIS_NUM_THREADS", "CFLAGS", "DEBIAN_FRONTEND", "GPG_KEY", "HOME", "HOSTNAME",
+    "LANG", "LC_ALL", "MKL_NUM_THREADS", "OLDPWD", "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS", "ORT_INTER_OP_NUM_THREADS", "ORT_INTRA_OP_NUM_THREADS",
+    "PATH", "PWD", "SHLVL", "SOURCE_DATE_EPOCH", "SSL_CERT_DIR", "SSL_CERT_FILE",
+    "TERM", "UV_BREAK_SYSTEM_PACKAGES", "_",
+}
+_BASE_ENV_PREFIXES = ("MODAL_", "PYTHON", "PIP_", "NVIDIA_", "CUDA_", "LD_LIBRARY_PATH")
+
+# The probe runs inside the container. `modal shell -c` shlex-splits the string, re-joins
+# it with spaces and hands it to `bash -c`, so quoting does NOT survive: the command must
+# contain no quotes and no shell metacharacters beyond `;`. `compgen -e` is a bash builtin
+# that prints exported variable NAMES only — a value is never printed, not even into a
+# pipe inside the container. The markers bracket the list so it can be picked out of the
+# image-build chatter on the same stream.
+_KEYS_START = "@@MCPKEYS-START@@"
+_KEYS_END = "@@MCPKEYS-END@@"
+_KEYS_PROBE = f"echo {_KEYS_START} ; compgen -e ; echo {_KEYS_END}"
+
+
+def _secret_key_names(env_names: List[str]) -> List[str]:
+    """Drop image/runtime variables, leaving the names that came from the secret."""
+    return sorted(
+        n for n in env_names
+        if n not in _BASE_ENV_NAMES and not n.startswith(_BASE_ENV_PREFIXES)
+    )
+
+
+@mcp.tool(annotations=_mutating("Inspect a Modal secret's key names", destructive=False))
+async def inspect_modal_secret(
+    secret_name: str,
+    env: Optional[str] = None,
+    image: Optional[str] = None,
+    timeout_seconds: int = 300,
+) -> Dict[str, Any]:
+    """
+    List the KEY NAMES inside a Modal secret — never the values.
+
+    Modal exposes no API for this: neither the CLI, the SDK, nor the gRPC layer can read
+    a secret's contents, by design. The only way to see which keys a secret defines is to
+    mount it in a container and look at the environment variable names. So this tool
+    starts a short-lived container (`modal shell --secret ...`), prints the variable NAMES
+    only, and subtracts the ones the image and the Modal runtime would have set anyway.
+
+    That means, unlike every other read in this server, a call here **starts remote
+    compute and costs a few cents** (and takes tens of seconds — longer on the first run
+    for a given image, which has to be built). It is not a free lookup: use
+    list_modal_resources(resource="secrets") to see which secrets exist, and reach for
+    this only when you need to know what is inside one.
+
+    Values never leave the container: the probe is `compgen -e`, a bash builtin that
+    prints exported variable NAMES only, so no value is ever printed or read.
+
+    Args:
+        secret_name: Name of the secret, from list_modal_resources(resource="secrets").
+        env: Modal environment the secret lives in.
+        image: Optional container image. Omit it to use Modal's default image, which is
+            built to match this server's Python — that is the most reliable choice. Pass one
+            (e.g. "python:3.12-slim") if the workspace's image builder rejects that Python.
+        timeout_seconds: Max seconds to wait, including image build. Default 300.
+
+    Returns: {keys: [...names...], all_env_names: [...], filtered_out: n}. `all_env_names`
+        is the unfiltered list, so a key that looks like a runtime variable (e.g. one
+        literally named "PATH") is still visible rather than silently dropped.
+    """
+    if not secret_name:
+        return {"success": False, "error": "secret_name is required"}
+    try:
+        command = ["modal", "shell", "--no-pty"]
+        if image:
+            command.extend(["--image", image])
+        command.extend(["--secret", secret_name])
+        _add_env(command, env)
+        command.extend(["-c", _KEYS_PROBE])
+
+        result = run_modal_streaming_command(command, timeout_seconds)
+        combined = (result["stdout"] or "") + "\n" + (result["stderr"] or "")
+        if _KEYS_START not in combined or _KEYS_END not in combined:
+            hint = (
+                "The container never reported its environment. "
+                if not result["timed_out"]
+                else f"Timed out after {timeout_seconds}s (an image build can be slow — retry, "
+                "or raise timeout_seconds). "
+            )
+            if "Unsupported Python version" in combined:
+                hint = (
+                    "This workspace's image builder does not support the Python version this "
+                    "server runs on. Pass an explicit `image` that it accepts (e.g. "
+                    "\"python:3.12-slim\"), or upgrade the image builder at "
+                    "modal.com/settings/image-config. "
+                )
+            elif "Image build" in combined and "failed" in combined:
+                hint = (
+                    "The container image failed to build. Try a different `image`, or check "
+                    "`modal image logs` for the build. "
+                )
+            response = {
+                "success": False,
+                "error": (
+                    f"Could not list the keys of {secret_name!r}. {hint}"
+                    "Confirm the secret exists in this environment with "
+                    "list_modal_resources(resource='secrets')."
+                ),
+                "timed_out": result["timed_out"],
+                "command": result["command"],
+            }
+            _add_capped(response, "stderr", result["stderr"])
+            return response
+
+        body = combined.split(_KEYS_START, 1)[1].split(_KEYS_END, 1)[0]
+        env_names = [line.strip() for line in body.splitlines() if line.strip()]
+
+        keys = _secret_key_names(env_names)
+        return {
+            "success": True,
+            "secret_name": secret_name,
+            "keys": keys,
+            "key_count": len(keys),
+            "all_env_names": sorted(env_names),
+            "filtered_out": len(env_names) - len(keys),
+            "command": result["command"],
+            "message": (
+                f"{secret_name!r} defines {len(keys)} key(s). Values were never read. "
+                "Names are inferred by subtracting the image/runtime variables listed in "
+                "`all_env_names`, so double-check that list if a key looks missing."
+            ),
+        }
+    except Exception as e:
+        logger.error(f"Failed to inspect Modal secret '{secret_name}': {e}")
+        raise
+
+
+# ---------------------------------------------------------------------------
 # Prompts — reusable workflows the user can invoke directly from the client
 # ---------------------------------------------------------------------------
 # Prompts cost nothing in per-session tool schema (clients fetch them on demand), so
@@ -1424,6 +1914,36 @@ def deploy_and_verify(absolute_path_to_app: str, env: str = "") -> str:
    error, and offer manage_modal_app(action="rollback", ...) to restore the previous version.
 
 Report: what was deployed, its URLs, and the evidence that it is healthy."""
+
+
+@mcp.prompt(title="Investigate a Modal cost spike")
+def investigate_modal_costs(period: str = "last week", app: str = "") -> str:
+    """Trace a cost increase back to the app and resource that caused it."""
+    focus = f'\nFocus on the app "{app}".\n' if app else "\n"
+    app_arg = f', app="{app}"' if app else ""
+    return f"""Work out where Modal spend went during {period} and what drove it.{focus}
+1. Shape of the spend over time — this also names the peak interval and ranks which apps
+   grew into it:
+   analyze_modal_costs(view="timeline", period="{period}"{app_arg})
+   Read `explanation.movers`: those are the apps that cost more in the peak interval than
+   in the one before, biggest increase first.
+2. Who spends the most overall:
+   analyze_modal_costs(view="by_app", period="{period}"{app_arg})
+3. Drill into the peak. Take the peak date from step 1 and go hourly:
+   analyze_modal_costs(view="timeline", start="<peak date>", end="<next date>", resolution="h")
+4. What kind of resource it was (a GPU class is usually the answer):
+   analyze_modal_costs(view="by_resource", period="{period}"{app_arg})
+5. Tie it to what actually ran: list_modal_resources(resource="apps") for the culprit, then
+   list_modal_resources(resource="app_history", name="<app>") to see whether a deploy lines
+   up with the increase, and search_modal_logs for retries/restarts around the peak.
+
+Costs are US dollars. `total_cost` covers every row in range even when the group list is
+truncated, so quote it rather than summing the visible rows. Modal reports whole intervals
+only, so a partially elapsed day reads low — say so instead of calling it a drop.
+
+Report: total for the period, the biggest spender, what changed at the peak and why, and —
+if the cause is a still-running container or an over-provisioned GPU — the exact call that
+would stop it, without running it."""
 
 
 @mcp.prompt(title="Review Modal account usage")

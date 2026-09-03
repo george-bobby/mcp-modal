@@ -1,6 +1,6 @@
 [project]
 name = "mcp-modal"
-version = "0.3.1"
+version = "0.4.0"
 description = "MCP server for managing Modal apps, containers, volumes, and secrets."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -10,7 +10,7 @@ authors = [{ name = "George Bobby" }]
 keywords = ["mcp", "modal", "model-context-protocol", "claude"]
 dependencies = [
     "mcp>=1.9.2,<2",
-    "modal>=1.0",
+    "modal>=1.5",   # billing summary/rates and snake_case report columns
     "pydantic>=2.10.6",
     "uv>=0.6.9",
 ]

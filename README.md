@@ -73,7 +73,9 @@ above is enough — requesting a version invalidates the cache. Otherwise
 
 - Python 3.11 or higher
 - [`uv`](https://docs.astral.sh/uv/) (provides `uvx`)
-- Modal CLI 1.x configured with valid credentials (`modal setup`)
+- Modal CLI 1.5 or newer, configured with valid credentials (`modal setup`) — 1.5 is
+  where `modal billing summary`/`rates` landed and where the billing report switched to
+  snake_case columns; the cost tool reads both spellings but needs 1.5 for those two views
 - For Modal **deploy** and **run** support:
   - The project being deployed/run must use `uv` for dependency management
   - `modal` must be installed in that project's virtual environment
@@ -135,7 +137,7 @@ error output.
 
 ## Supported Tools
 
-10 tools. Related operations are grouped behind an `action`/`resource` argument rather than
+12 tools. Related operations are grouped behind an `action`/`resource` argument rather than
 split one-per-CLI-subcommand: every tool schema is loaded into the model's context for the
 whole session, so a smaller surface leaves more room for your actual work (and gives the
 model fewer near-identical tools to choose between).
@@ -239,9 +241,52 @@ there.
     - Secret values are redacted from every field returned, including error output.
     - To list secret names use `list_modal_resources(resource="secrets")`.
 
+### Costs
+
+11. **Analyze Modal Costs** (`analyze_modal_costs`) — read-only. Fetches
+    `modal billing` once and aggregates locally, so you get ranked totals and
+    period-over-period changes instead of hundreds of raw rows.
+    - Parameters: `view` (default `by_app`), `period`, `start`, `end`, `resolution`
+      (`d`/`h`), `timezone`, `app`, `environment`, `top_n` (default 10), `tag_names`
+    - `view` values:
+      | value | answers |
+      | --- | --- |
+      | `by_app` | "what is my costliest app?" — apps ranked by spend, with % share |
+      | `timeline` | "why was Monday expensive?" — cost per interval, plus an `explanation` that diffs the peak interval against the one before and ranks which apps grew |
+      | `by_environment` | which environment the money goes to |
+      | `by_resource` | CPU vs GPU class vs memory vs storage |
+      | `summary` | billed vs metered cost for a month cycle, with credits/plan adjustments |
+      | `rates` | current unit prices |
+    - `total_cost` always covers every row in range, even when `groups` is cut to
+      `top_n` — quote it rather than summing the visible rows.
+    - Billing is workspace-wide (the CLI takes no `-e`), so this reports across all
+      environments; `environment` filters the rows afterwards.
+    - Modal reports **whole intervals only**, so a partially elapsed day reads low.
+
+### Secrets — inspection
+
+12. **Inspect Modal Secret** (`inspect_modal_secret`) — lists the **key names** inside a
+    secret, never the values.
+    - Parameters: `secret_name` (required), `env`, `image`, `timeout_seconds` (default 300)
+    - Modal exposes no API for this by design: not the CLI, not the SDK, not the gRPC
+      layer. The only way to see which keys a secret defines is to mount it in a container
+      and list the environment. So this tool runs `modal shell --secret <name>` with
+      `compgen -e` (a bash builtin that prints exported variable *names* only — no value is
+      ever printed, even inside the container), then subtracts the ~35 variables the image
+      and Modal runtime set anyway.
+    - **This one call starts remote compute**, so it costs a few cents and takes tens of
+      seconds (longer when the image has to build). Every other read in this server is
+      free; use `list_modal_resources(resource="secrets")` to see *which* secrets exist and
+      reach for this only when you need to know what is *inside* one.
+    - Returns `keys`, plus the unfiltered `all_env_names` so a key that looks like a
+      runtime variable is still visible rather than silently dropped.
+    - Omit `image` to use Modal's default (built to match the server's Python — the most
+      reliable choice). Pass one, e.g. `python:3.12-slim`, if your workspace's image
+      builder rejects that Python version.
+
 ## Prompts
 
-The server also ships three MCP prompts — multi-step workflows your client can invoke
+The server also ships four MCP prompts — multi-step workflows your client can invoke
 directly (in Claude Code they appear as `/mcp__mcp-modal__<name>`). Prompts are fetched on
 demand, so unlike tools they cost nothing in per-session context:
 
@@ -254,6 +299,9 @@ demand, so unlike tools they cost nothing in per-session context:
 - **`review_modal_account`** (optional `env`) — a read-only inventory that flags idle apps,
   unexplained running containers, and orphaned volumes/secrets, naming the exact call that
   would clean each one up without running it.
+- **`investigate_modal_costs`** (optional `period`, `app`) — traces a spend increase from
+  the daily timeline down to the peak hour, the resource class, and the deploy or
+  still-running container behind it.
 
 ## Output caps
 
