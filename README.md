@@ -46,7 +46,7 @@ Or add it to a `.mcp.json` file in your project root:
 }
 ```
 
-To pin a specific release, use `uvx mcp-modal@0.2.0`.
+To pin a specific release, use `uvx mcp-modal@0.3.0`.
 
 ## Requirements
 
@@ -68,21 +68,29 @@ than being auto-approved:
 - **`deploy_modal_app` / `run_modal_app`** — execute arbitrary local Python on the host
   (`modal deploy` imports the app file; `uv run` resolves and installs the target project's
   dependencies).
-- **`put_modal_volume_file`** — can read any local file (e.g. `~/.ssh/id_rsa`, `~/.modal.toml`)
-  and upload it to a cloud volume (a data-exfiltration primitive).
-- **`get_modal_volume_file`** with `force=True` — can overwrite any local path (e.g. `~/.zshrc`
-  or a shell profile, a persistence primitive).
-- **`exec_modal_container`** — runs arbitrary commands inside a container, by design.
+- **`modal_volume_files`** with `action="put"` — can read any local file (e.g. `~/.ssh/id_rsa`,
+  `~/.modal.toml`) and upload it to a cloud volume (a data-exfiltration primitive).
+- **`modal_volume_files`** with `action="get"` and `force=True` — can overwrite any local path
+  (e.g. `~/.zshrc` or a shell profile, a persistence primitive).
+- **`manage_modal_container`** with `action="exec"` — runs arbitrary commands inside a
+  container, by design.
+
+Every tool declares [MCP tool annotations](https://modelcontextprotocol.io/specification/server/tools#tool-annotations),
+so a client can distinguish the three read-only tools (`list_modal_resources`,
+`get_modal_logs`, `search_modal_logs`, all `readOnlyHint: true`) from the seven that change
+remote state (`destructiveHint: true`, except `run_modal_app`). Auto-approve the reads;
+keep the writes behind a prompt.
 
 ### Optional local-path allowlist
 
 To contain the two filesystem-touching volume tools, set the
 `MCP_MODAL_ALLOWED_LOCAL_PATHS` environment variable to an
 [`os.pathsep`](https://docs.python.org/3/library/os.html#os.pathsep)-separated list of
-directories (`:` on macOS/Linux). When it is set, `put_modal_volume_file` (its `local_path`)
-and `get_modal_volume_file` (its `local_destination`) are refused unless the resolved path —
-after expanding `~` and collapsing `..`/symlinks — falls inside one of those roots. The
-download target `"-"` (stream to stdout) is exempt because nothing is written to disk.
+directories (`:` on macOS/Linux). When it is set, `modal_volume_files` is refused for any
+local path — `local_path` on `action="put"`, the destination on `action="get"` — unless the
+resolved path, after expanding `~` and collapsing `..`/symlinks, falls inside one of those
+roots. The download target `"-"` (return contents instead of writing a file) is exempt
+because nothing is written to disk.
 
 When the variable is **unset (the default) there is no restriction**, so existing setups are
 unaffected. Configure it in your MCP client, e.g.:
@@ -101,28 +109,78 @@ unaffected. Configure it in your MCP client, e.g.:
 
 All tools also pass user-supplied names/paths after a `--` end-of-options separator, so a
 value beginning with `-` is always treated as data, never as a `modal` CLI flag. Secret
-values handed to `create_modal_secret` are redacted from the echoed command, logs, and any
+values handed to `manage_modal_secret` are redacted from the echoed command, logs, and any
 error output.
 
 ## Supported Tools
 
-26 tools, grouped by area. Account-scoped tools accept an optional `env` argument to
-target a specific [Modal environment](https://modal.com/docs/guide/environments); if
-omitted, they use the profile's default (or `MODAL_ENVIRONMENT`).
+10 tools. Related operations are grouped behind an `action`/`resource` argument rather than
+split one-per-CLI-subcommand: every tool schema is loaded into the model's context for the
+whole session, so a smaller surface leaves more room for your actual work (and gives the
+model fewer near-identical tools to choose between).
 
-### Deploy & Run
+Tools that talk to environment-scoped resources take an optional `env` argument to target a
+specific [Modal environment](https://modal.com/docs/guide/environments); if omitted, they
+use the profile's default (or `MODAL_ENVIRONMENT`). The exception is `manage_modal_container`
+and container logs — a container ID is globally unique and the CLI accepts no environment
+there.
 
-1. **Deploy Modal App** (`deploy_modal_app`)
-   - Deploys a Modal app (`modal deploy`). Deployed web endpoints persist, so any links
-     in the output are live and shareable (returned in `urls`).
+### Read-only
+
+1. **List Modal Resources** (`list_modal_resources`) — one lookup for the whole account.
+   - Parameters: `resource` (required), `name`, `path` (default `/`), `env`
+   - `resource` values:
+     | value | returns | `name` means |
+     | --- | --- | --- |
+     | `apps` | deployed/running/recently-stopped apps | — |
+     | `app_history` | one app's deployment versions (for rollback) | app name/ID |
+     | `containers` | running containers (`ta-...`) | app ID to filter by |
+     | `volumes` | named volumes | — |
+     | `volume_files` | files inside a volume (with `path`) | volume name |
+     | `secrets` | secret names (values are never exposed) | — |
+     | `environments` | valid `env` values for this workspace | — |
+     | `profile` | active profile + all profiles | — |
+   - `volume_files` sets `empty: true` with a message when a listing genuinely returns
+     nothing, so an empty directory is distinguishable from a wrong path.
+   - Listings over 200 entries are capped, with `omitted_items` giving the number dropped.
+
+2. **Get Modal Logs** (`get_modal_logs`) — fetch or stream logs for an app *or* a container.
+   - Parameters: `identifier` (required), `target` (`auto`/`app`/`container`, default
+     `auto` — anything starting `ta-` is a container), `timeout_seconds` (default 30),
+     `env`, `since`, `until`, `tail`, `source` (`stdout`/`stderr`/`system`), `timestamps`,
+     `follow`
+   - With `follow=True`, logs stream until the app/container stops or `timeout_seconds` is
+     reached, returning a snapshot with `truncated: true`.
+   - Only covers the stdout/stderr/system streams; some failures (e.g. a crash reported as
+     "... exited with ...") are Modal dashboard events, not log lines, and won't appear here.
+
+3. **Search Modal Logs** (`search_modal_logs`) — grep logs and get each hit **with the
+   surrounding lines**, built for "where did it go wrong?" debugging. Logs are fetched once
+   and searched locally, so you get context, regex, case control, and exact match counts.
+   - Parameters: `identifier` (required), `pattern` (required), `target` (default `auto`),
+     `regex`, `case_sensitive`, `context_lines` (default 3), `max_matches` (default 50),
+     `since`, `tail` (defaults to the last 1000 entries), `source`,
+     `exclude` (drop noise lines before searching, e.g. `"queue put failed"`),
+     `timestamps` (default `true`), `timeout_seconds`, `env`
+   - Returns `match_count` and `matches`: timestamped, line-numbered context blocks where
+     matched lines are prefixed with `>`, e.g. `> 8: 2026-06-04T... ValueError: bad input`.
+     The whole fetched log is always searched, so `match_count` stays exact even when fewer
+     blocks are returned. Reports `excluded_lines` when `exclude` is used.
+   - Same stdout/stderr/system-only caveat as `get_modal_logs`.
+
+### Deploy & run
+
+4. **Deploy Modal App** (`deploy_modal_app`)
+   - Deploys a Modal app (`modal deploy`). Deployed web endpoints persist, so any links in
+     the output are live and shareable (returned in `urls`).
    - Parameters: `absolute_path_to_app` (required), `env`, `name`, `tag`,
      `strategy` (`rolling`/`recreate`), `stream_logs`
    - The app's directory must use `uv` with `modal` installed in its virtualenv.
 
-2. **Run Modal App** (`run_modal_app`)
-   - Runs a function or local entrypoint once and streams its output (`modal run`).
-   - Parameters: `absolute_path_to_app` (required), `function_name`, `env`,
-     `detach`, `timeout_seconds` (default 120)
+5. **Run Modal App** (`run_modal_app`)
+   - Runs a function or local entrypoint once and collects its output (`modal run`).
+   - Parameters: `absolute_path_to_app` (required), `function_name`, `env`, `detach`,
+     `timeout_seconds` (default 120)
    - Returns a snapshot with `truncated: true` if the run is still going at the timeout.
      Pass `detach=True` to keep long jobs alive on Modal past the timeout.
 
@@ -130,130 +188,119 @@ omitted, they use the profile's default (or `MODAL_ENVIRONMENT`).
 > blocking process runs — an MCP tool that returns would tear them down immediately,
 > handing back a dead URL. Use `deploy_modal_app` for a persistent, shareable endpoint.
 
-### Apps
+### State changes
 
-3. **List Modal Apps** (`list_modal_apps`)
-   - Lists apps currently deployed/running or recently stopped. Use this to find the
-     app name/ID for the other app tools.
-   - Parameters: `env`
+6. **Manage Modal App** (`manage_modal_app`) — `action` is `stop` (shut the app down and
+   terminate its containers) or `rollback` (redeploy a previous version).
+   - Parameters: `action` (required), `app_identifier` (required), `version` (rollback
+     only — defaults to the immediately preceding version), `env`
 
-4. **Get Modal App Logs** (`get_modal_app_logs`)
-   - Fetches or streams logs for an app by name or ID (`modal app logs`).
-   - Parameters: `app_identifier` (required), `timeout_seconds` (default 30), `env`,
-     `since`, `until`, `tail`, `search`, `source` (`stdout`/`stderr`/`system`),
-     `timestamps` (prefix each line with its wall-clock time), `follow`
-   - With `follow=True`, logs stream until the app stops or `timeout_seconds` is reached,
-     returning a snapshot with `truncated: true`.
-   - Only covers the stdout/stderr/system streams; some failures (e.g. a crash reported as
-     "... exited with ...") are Modal dashboard events, not log lines, and won't appear here.
+7. **Manage Modal Container** (`manage_modal_container`) — `action` is `exec` (run a command
+   inside a running container, `modal container exec --no-pty`) or `stop` (terminate it).
+   - Parameters: `action` (required), `container_id` (required), `command` (exec only —
+     a list of args, e.g. `["python", "-c", "print('hi')"]`), `timeout_seconds` (default 60)
 
-5. **Stop Modal App** (`stop_modal_app`)
-   - Permanently stops an app and terminates its containers (`modal app stop`).
-   - Parameters: `app_identifier` (required), `env`
+8. **Manage Modal Volume** (`manage_modal_volume`) — `action` is `create`, `delete`
+   (the volume **and all its data**, irreversible), or `rename`.
+   - Parameters: `action` (required), `volume_name` (required), `new_name` (rename only), `env`
 
-6. **Roll Back Modal App** (`rollback_modal_app`)
-   - Redeploys a previous version of an app (`modal app rollback`).
-   - Parameters: `app_identifier` (required), `version` (optional — defaults to the
-     previous version), `env`
+9. **Modal Volume Files** (`modal_volume_files`) — write operations on a volume's files:
+   `action` is `put` (upload), `get` (download), `cp` (copy inside the volume), or `rm`.
+   - Parameters: `action` (required), `volume_name` (required), `local_path`, `remote_path`,
+     `paths` (for `cp`: sources then destination), `recursive`, `force`, `env`
+   - `action="get"` with `local_path="-"` returns the file contents instead of writing a file.
+   - To *list* a volume's contents use `list_modal_resources(resource="volume_files")`.
 
-7. **Get Modal App History** (`get_modal_app_history`)
-   - Returns an app's deployment history (`modal app history`). Use it to find a
-     `version` for rollback.
-   - Parameters: `app_identifier` (required), `env`
+10. **Manage Modal Secret** (`manage_modal_secret`) — `action` is `create` or `delete`.
+    - Parameters: `action` (required), `secret_name` (required), `key_values` (dict),
+      `from_dotenv` (path), `from_json` (path), `force`, `env`. Creating requires at least
+      one of `key_values`, `from_dotenv`, or `from_json`.
+    - Secret values are redacted from every field returned, including error output.
+    - To list secret names use `list_modal_resources(resource="secrets")`.
 
-### Containers
+## Prompts
 
-8. **List Modal Containers** (`list_modal_containers`)
-   - Lists currently running containers (`modal container list`).
-   - Parameters: `app_id` (optional filter), `env`
+The server also ships three MCP prompts — multi-step workflows your client can invoke
+directly (in Claude Code they appear as `/mcp__mcp-modal__<name>`). Prompts are fetched on
+demand, so unlike tools they cost nothing in per-session context:
 
-9. **Get Modal Container Logs** (`get_modal_container_logs`)
-   - Fetches or streams logs for a container ID (`modal container logs`).
-   - Parameters: `container_id` (required), `timeout_seconds` (default 30),
-     `since`, `until`, `tail`, `search`, `source`, `timestamps`, `follow`
-   - Same stdout/stderr/system-only caveat as the app-logs tool above.
+- **`debug_modal_app`** (`app_name`, optional `symptom`) — an ordered triage routine: check
+  the app is up, search logs for tracebacks with context, fall back to the log tail,
+  inspect containers, then compare against deployment history and consider a rollback.
+- **`deploy_and_verify`** (`absolute_path_to_app`, optional `env`) — confirm the target
+  workspace, deploy, report the live URLs, then *verify* the app is healthy instead of
+  assuming it.
+- **`review_modal_account`** (optional `env`) — a read-only inventory that flags idle apps,
+  unexplained running containers, and orphaned volumes/secrets, naming the exact call that
+  would clean each one up without running it.
 
-10. **Exec in Modal Container** (`exec_modal_container`)
-    - Runs a command inside a running container (`modal container exec --no-pty`).
-    - Parameters: `container_id` (required), `command` (list of args, e.g.
-      `["python", "-c", "print('hi')"]`), `timeout_seconds` (default 60)
+## Output caps
 
-11. **Stop Modal Container** (`stop_modal_container`)
-    - Terminates a running container (`modal container stop`).
-    - Parameters: `container_id` (required)
+Log, run, and exec output is capped before it is returned, so one chatty app can't flood
+your context window. The default budget is 40,000 characters per text field (roughly 10k
+tokens); when a field is trimmed the result sets `output_capped: true` and the text carries
+a marker naming how much was dropped. A capped field keeps its head *and* its tail, so a
+startup banner and the traceback at the end both survive.
 
-### Log Search
+Searching is never capped before the fact: `search_modal_logs` greps the whole fetched log
+and only limits how many context blocks come back, so `match_count` is always exact.
 
-12. **Search Modal Logs** (`search_modal_logs`)
-    - Greps an app's or container's logs for a pattern and returns each hit **with the
-      surrounding lines** — built for "where did it go wrong?" debugging. Logs are fetched
-      once and searched locally, so (unlike the `search` argument on the log tools) you get
-      context, regex, case control, and match counts, not just the bare matching line.
-    - Parameters: `identifier` (required — app name/ID or container ID), `pattern` (required),
-      `target` (`app`/`container`, default `app`), `regex`, `case_sensitive`,
-      `context_lines` (default 3), `max_matches` (default 50), `since`, `tail`
-      (defaults to the last 1000 entries), `source` (`stdout`/`stderr`/`system`),
-      `exclude` (drop noise lines before searching, e.g. `"queue put failed"`),
-      `timestamps` (default `true` — carry each line's wall-clock time into the result),
-      `timeout_seconds`, `env`
-    - Returns `match_count` and `matches`: timestamped, line-numbered context blocks where
-      matched lines are prefixed with `>`, e.g. `> 8: 2026-06-04T... ValueError: bad input`.
-      Reports `excluded_lines` when `exclude` is used.
-    - Only searches the stdout/stderr/system streams; failures emitted as Modal dashboard
-      events (e.g. "... exited with ...") return 0 matches even when the failure is real.
+Set `MCP_MODAL_MAX_OUTPUT_CHARS` to raise or lower the budget, or to `0` to disable capping
+entirely:
 
-### Volumes — Files
+```json
+{
+  "mcpServers": {
+    "mcp-modal": {
+      "command": "uvx",
+      "args": ["mcp-modal"],
+      "env": { "MCP_MODAL_MAX_OUTPUT_CHARS": "80000" }
+    }
+  }
+}
+```
 
-13. **List Modal Volumes** (`list_modal_volumes`) — lists all volumes. Parameters: none.
-14. **List Volume Contents** (`list_modal_volume_contents`) — `volume_name`, `path` (default `/`). Sets `empty: true` with a message when the listing genuinely returns nothing, so an empty directory is distinguishable from an error or a wrong path.
-15. **Copy Files** (`copy_modal_volume_files`) — `volume_name`, `paths` (last is destination).
-16. **Remove File** (`remove_modal_volume_file`) — `volume_name`, `remote_path`, `recursive`.
-17. **Upload File** (`put_modal_volume_file`) — `volume_name`, `local_path`, `remote_path`, `force`.
-18. **Download File** (`get_modal_volume_file`) — `volume_name`, `remote_path`, `local_destination`, `force`. Use `-` as the destination to stream contents to stdout.
+## Upgrading from 0.2.x
 
-### Volumes — Lifecycle
+0.3.0 replaces the 26 single-purpose tools with 10 grouped ones. Nothing was dropped — every
+operation is still reachable — but the names and arguments changed:
 
-19. **Create Volume** (`create_modal_volume`) — creates a named persistent volume. Parameters: `volume_name`, `env`.
-20. **Delete Volume** (`delete_modal_volume`) — deletes a volume **and all its data** (irreversible). Parameters: `volume_name`, `env`.
-21. **Rename Volume** (`rename_modal_volume`) — Parameters: `old_name`, `new_name`, `env`.
+| 0.2.x | 0.3.0 |
+| --- | --- |
+| `list_modal_apps` | `list_modal_resources(resource="apps")` |
+| `get_modal_app_history` | `list_modal_resources(resource="app_history", name=...)` |
+| `list_modal_containers` | `list_modal_resources(resource="containers")` |
+| `list_modal_volumes` | `list_modal_resources(resource="volumes")` |
+| `list_modal_volume_contents` | `list_modal_resources(resource="volume_files", name=...)` |
+| `list_modal_secrets` | `list_modal_resources(resource="secrets")` |
+| `list_modal_environments` | `list_modal_resources(resource="environments")` |
+| `get_modal_profile` | `list_modal_resources(resource="profile")` |
+| `get_modal_app_logs` / `get_modal_container_logs` | `get_modal_logs` (auto-detects the target) |
+| `stop_modal_app` / `rollback_modal_app` | `manage_modal_app(action="stop"/"rollback")` |
+| `exec_modal_container` / `stop_modal_container` | `manage_modal_container(action="exec"/"stop")` |
+| `create_modal_volume` / `delete_modal_volume` / `rename_modal_volume` | `manage_modal_volume(action=...)` |
+| `put_modal_volume_file` / `get_modal_volume_file` / `copy_modal_volume_files` / `remove_modal_volume_file` | `modal_volume_files(action="put"/"get"/"cp"/"rm")` |
+| `create_modal_secret` / `delete_modal_secret` | `manage_modal_secret(action="create"/"delete")` |
 
-### Secrets
-
-22. **List Secrets** (`list_modal_secrets`)
-    - Lists published secrets (names and timestamps only — values are never exposed).
-    - Parameters: `env`
-
-23. **Create Secret** (`create_modal_secret`)
-    - Creates a secret from inline key/values or a local file (`modal secret create`).
-      Secret values are **redacted** from the returned `command`.
-    - Parameters: `secret_name` (required), `key_values` (dict), `from_dotenv` (path),
-      `from_json` (path), `force`, `env`. Provide at least one of `key_values`,
-      `from_dotenv`, or `from_json`.
-
-24. **Delete Secret** (`delete_modal_secret`) — Parameters: `secret_name`, `env`.
-
-### Discovery
-
-25. **Get Modal Profile** (`get_modal_profile`)
-    - Shows the active profile and all configured profiles. Use it to confirm which
-      workspace/account the server is authenticated as. Parameters: none.
-
-26. **List Modal Environments** (`list_modal_environments`)
-    - Lists the environments in the current workspace; the names are valid `env`
-      arguments for the other tools. Parameters: none.
+Also new in 0.3.0: every volume tool now accepts `env` (volumes are environment-scoped, and
+0.2.x silently used the default environment for file operations), `modal_volume_files`
+supports `recursive` for `cp`, and `search_modal_logs`/`get_modal_logs` accept
+`target="auto"`. The redundant `search` argument on the log tools is gone — use
+`search_modal_logs`, which returns context instead of bare matching lines.
 
 ## Response Format
 
 All tools return responses in a standardized format, with slight variations depending on the operation type:
 
 ```python
-# JSON / list operations (apps, containers, volumes, secrets, history, ...):
+# Lookups (list_modal_resources):
 {
     "success": True,
-    "apps": [...]   # or "containers", "volumes", "secrets", "history", "environments"
+    "apps": [...],          # or "containers", "volumes", "contents", "secrets", ...
+    "omitted_items": 0      # present when the listing was capped at 200 entries
 }
 
-# Action operations (deploy, stop, create, delete, rename, copy, put, get, rm):
+# Action operations (deploy, stop, rollback, create, delete, rename, cp, put, get, rm):
 {
     "success": True,
     "message": "Operation successful message",
@@ -267,6 +314,7 @@ All tools return responses in a standardized format, with slight variations depe
     "success": True,
     "logs": "...",          # or "output" for run/exec
     "truncated": False,     # True when cut off at timeout_seconds
+    "output_capped": False, # True when text was trimmed to fit MCP_MODAL_MAX_OUTPUT_CHARS
     "command": "executed command string"
 }
 

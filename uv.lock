@@ -566,7 +566,7 @@ wheels = [
 
 [[package]]
 name = "mcp-modal"
-version = "0.2.4"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "mcp" },
@@ -577,7 +577,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "mcp", specifier = ">=1.9.2" },
+    { name = "mcp", specifier = ">=1.9.2,<2" },
     { name = "modal", specifier = ">=1.0" },
     { name = "pydantic", specifier = ">=2.10.6" },
     { name = "uv", specifier = ">=0.6.9" },
