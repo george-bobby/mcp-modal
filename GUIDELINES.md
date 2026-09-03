@@ -31,6 +31,13 @@ which is what you do for a tag that was pushed before the workflow existed.
 
 The manual `uv publish` / `mcp-publisher publish` commands below remain valid as a fallback.
 
+**Re-pushing an existing tag is safe.** PyPI versions are immutable, so a workflow run for a
+version that is already published used to fail the whole run (a force-pushed tag, or a manual
+dispatch on an old one, rebuilds an artifact PyPI will not accept — especially if the tag's
+tree has changed since). The workflow now checks PyPI for the version in `pyproject.toml`
+first and skips both the PyPI upload and the registry publish when it is already live, so the
+run stays green and nothing is republished. To actually release, bump the version.
+
 ---
 
 ## Automated publishing (recommended)

@@ -23,18 +23,43 @@ jobs:
     permissions:
       id-token: write   # OIDC: mint a short-lived PyPI token, no secret needed
       contents: read
+    outputs:
+      # 'true' only when this run actually uploaded a new version, so the registry
+      # job below knows whether there is anything for it to publish.
+      published: ${{ steps.check.outputs.exists == 'false' }}
     steps:
       - uses: actions/checkout@v5
       - name: Install uv
         uses: astral-sh/setup-uv@v6
       - name: Build sdist + wheel
         run: uv build
+      # PyPI versions are immutable: re-running this workflow for a version that is
+      # already published fails the whole run, and re-pushing an existing tag (or a
+      # manual dispatch on an old one) does exactly that. Worse, a rebuilt artifact
+      # for a published version can differ byte-for-byte, so PyPI rejects it outright
+      # rather than treating the upload as a no-op. Detect that case and skip.
+      - name: Check whether this version is already on PyPI
+        id: check
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if curl -fsS -o /dev/null "https://pypi.org/pypi/mcp-modal/$version/json"; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::mcp-modal $version is already on PyPI — nothing to publish."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Publish to PyPI
+        if: steps.check.outputs.exists == 'false'
         run: uv publish --trusted-publishing always
 
   registry:
     name: Publish to MCP Registry (OIDC)
     needs: pypi   # the registry validates that the PyPI version is already live
+    # Skip when PyPI had nothing to publish — the registry rejects a duplicate
+    # version too, and a re-pushed tag would otherwise fail here instead.
+    if: needs.pypi.outputs.published == 'true'
     runs-on: ubuntu-latest
     permissions:
       id-token: write   # OIDC: authenticate mcp-publisher as this repo
