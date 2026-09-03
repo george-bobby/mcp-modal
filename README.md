@@ -30,23 +30,44 @@ This opens a browser to log in and stores a token in `~/.modal.toml`. Already lo
 Add the server to Claude Code with the `claude mcp` CLI:
 
 ```bash
-claude mcp add mcp-modal -- uvx mcp-modal
+claude mcp add mcp-modal -- uvx mcp-modal@latest
 ```
 
-Or add it to a `.mcp.json` file in your project root:
+Or add it to a `.mcp.json` file in your project root, which is the better option for a team
+— everyone who opens the repo gets the same configuration:
 
 ```json
 {
   "mcpServers": {
     "mcp-modal": {
       "command": "uvx",
-      "args": ["mcp-modal"]
+      "args": ["mcp-modal@latest"]
     }
   }
 }
 ```
 
-To pin a specific release, use `uvx mcp-modal@0.3.0`.
+### Why `@latest`, and when to pin instead
+
+`uvx` caches the environment it builds on the first run and **does not check PyPI again**:
+
+> "uvx will use the latest available version of the requested tool on the first invocation.
+> After that, uvx will use the cached version of the tool unless a different version is
+> requested, the cache is pruned, or the cache is refreshed."
+> — [uv docs](https://docs.astral.sh/uv/concepts/tools/)
+
+So a plain `uvx mcp-modal` means *latest at install time, frozen forever after* — restarting
+the client or rebooting changes nothing, because the cache lives on disk. Different people
+end up on different versions depending on when they first ran it, with no warning.
+
+- **`mcp-modal@latest`** re-resolves on every launch, so a restart picks up new releases.
+  Costs one network round-trip at startup. Use it while the tool surface is still moving.
+- **`mcp-modal@0.3.0`** (an explicit version) is reproducible and upgrades become a
+  deliberate one-line change. Use it once you want stability, or for a wider audience.
+
+To move a machine that is already stuck on an old cached build, switching it to either form
+above is enough — requesting a version invalidates the cache. Otherwise
+`uv cache clean mcp-modal` forces a refresh.
 
 ## Requirements
 
