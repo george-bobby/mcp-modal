@@ -28,7 +28,28 @@ There is **no test suite, linter config, or CI** in this repo. Don't claim a cha
 
 ## Architecture
 
-The whole server is one file: `src/mcp_modal/server.py` (~1900 lines, 12 `@mcp.tool()` functions plus 4 `@mcp.prompt()` functions). Everything else is packaging.
+### Module layout
+
+```
+src/mcp_modal/
+  server.py      assembly point: imports the pieces, re-exports the public names, main()
+  app.py         the FastMCP instance (`mcp`), `logger`, and _read_only/_mutating
+  command.py     argv helpers (_add_env, _uv_prefixed, path allowlist) + the two runners
+  output.py      output caps and the response envelope (handle_json_response, json_listing…)
+  logsearch.py   pure log-text logic: grep_lines, filter_log_lines, cap_blocks, window checks
+  billing.py     pure cost math: Decimal helpers, _row_field aliases, group_costs, cost_movers
+  prompts.py     the 4 @mcp.prompt() workflows
+  tools/         the 12 @mcp.tool() functions, one module per group
+    deploy.py resources.py logs.py apps.py volumes.py secrets.py costs.py
+```
+
+The dependency graph runs strictly one way: `app` → `command` → `output` → `logsearch` → `tools`/`prompts` → `server`, with `billing` depending on nothing but the stdlib. (`output` imports `command` because `json_listing` runs the command itself, and `logsearch` imports `output` for the character budget `cap_blocks` spends.) Nothing under `tools/` is imported by a support module, and `app.py` imports nothing from the package — keep it that way and there are no cycles to reason about.
+
+Tools and prompts register by *decorator side effect*, so a module that is never imported silently disappears from the server. `tools/__init__.py` imports all seven tool modules and `server.py` imports `tools` and `prompts` — **a new tool module must be added to `tools/__init__.py` or its tools won't exist.** After any change here, check the inventory is still 12 tools and 4 prompts (`mcp.list_tools()` / `mcp.list_prompts()`).
+
+`server.py` re-exports every tool, prompt and helper and lists them in `__all__`, so `from mcp_modal.server import search_modal_logs` (and `group_costs`, `grep_lines`, …) keeps working — that's the import path the README and any ad-hoc script uses, and the console script `mcp_modal.server:main` depends on it too. Add new public names to those re-exports.
+
+`logger` is `logging.getLogger("mcp_modal")` in `app.py` rather than `__name__` per module, so log lines keep one stable name no matter which module emits them.
 
 ### Tool grouping (why there are 12 tools, not 28)
 
@@ -38,9 +59,9 @@ Every tool schema is loaded into the client's context for the entire session, so
 - `manage_modal_app` (stop/rollback), `manage_modal_container` (exec/stop), `manage_modal_volume` (create/delete/rename), `modal_volume_files` (put/get/cp/rm), `manage_modal_secret` (create/delete).
 - `deploy_modal_app`, `run_modal_app`, `get_modal_logs`, `search_modal_logs`, `analyze_modal_costs`, `inspect_modal_secret` keep their own tools — distinct enough that folding them in would only make the schemas harder to read.
 
-Prefer adding an `action` to an existing group over adding an 11th tool. Every grouped tool validates its `action` up front and returns a `{"success": False, "error": ...}` naming the valid values; keep that pattern, and keep docstrings terse — the docstring *is* the schema description the model pays for.
+Prefer adding an `action` to an existing group over adding a 13th tool (new group → new module under `tools/`, registered in `tools/__init__.py`). Every grouped tool validates its `action` up front and returns a `{"success": False, "error": ...}` naming the valid values; keep that pattern, and keep docstrings terse — the docstring *is* the schema description the model pays for.
 
-### Tool annotations
+### Tool annotations (`app.py`)
 
 Each `@mcp.tool()` passes `annotations=` built by `_read_only()` or `_mutating()` so clients can auto-approve safe lookups and prompt on the rest. `readOnlyHint=True` is a real promise: only put it on a tool that runs no mutating subcommand. `_mutating(destructive=False)` is for calls that don't remove or overwrite anything (currently only `run_modal_app`).
 
@@ -53,7 +74,7 @@ There are two execution modes for account-scoped vs project-scoped commands, con
 - **Account-scoped** (apps, containers, volumes, secrets, profiles, environments) — run the plain `modal` binary on the host.
 - **Project-scoped** (`deploy_modal_app`, `run_modal_app`) — wrap the command in `uv run --directory=<project_dir>` so Modal executes inside the *target project's* virtualenv. This is why those tools require `absolute_path_to_app` and why the target project must use `uv` with `modal` installed in its venv. `uv_directory` is the only difference; `_uv_prefixed` adds the `uv run --directory=...` prefix when set, otherwise leaves the command untouched.
 
-### Two subprocess runners
+### Two subprocess runners (`command.py`)
 
 Tools call exactly one of these:
 
@@ -62,7 +83,7 @@ Tools call exactly one of these:
 
 A tool that uses the streaming runner returns `truncated: true` when output was cut off at the deadline — callers are expected to interpret that as "still running, ask again" rather than failure.
 
-### Response shape
+### Response shape (`output.py`)
 
 Three helpers produce the standard envelope so every tool returns the same shape:
 
@@ -71,7 +92,7 @@ Three helpers produce the standard envelope so every tool returns the same shape
 - `standardize_result` — for action commands (deploy/stop/create/rm/rename); produces `{success, message, command, stdout?, stderr?}` or the error variant.
 - Streaming tools build their own response directly because they need the `truncated` / `output` / `urls` fields.
 
-### Output caps
+### Output caps (`output.py`)
 
 The streaming runner is bounded by *time*, not volume, so a chatty app can emit megabytes inside a 30s window. Text that goes back to the client is therefore capped:
 
@@ -81,7 +102,7 @@ The streaming runner is bounded by *time*, not volume, so a chatty app can emit 
 
 `extract_urls` scrubs http(s) links from stdout+stderr so deploy/run tools can surface live web-endpoint URLs in a dedicated `urls` field — this is the main way clients discover what got deployed.
 
-### Cost analysis (`analyze_modal_costs`)
+### Cost analysis (`tools/costs.py`, math in `billing.py`)
 
 Same shape as log search: fetch once, compute locally. `modal billing report --json` returns one flat row per (app, interval) — 1500+ rows for a week on a busy workspace — so the tool sums and ranks them itself rather than handing the caller arithmetic. `group_costs` aggregates by app/environment/resource/interval; `cost_movers` finds the most expensive interval and diffs it against the preceding one, which is what actually answers "why was Monday expensive". Costs are `Decimal` throughout: summing hundreds of 8-decimal strings as floats drifts.
 
@@ -92,7 +113,7 @@ Two version landmines, both handled and both worth knowing before you touch this
 
 Billing is workspace-wide: `modal billing report` accepts no `-e/--env`, so never route it through `_add_env` — the environment arrives as a row field and is filtered locally.
 
-### Secret key inspection (`inspect_modal_secret`)
+### Secret key inspection (`inspect_modal_secret`, in `tools/secrets.py`)
 
 The one tool that spends money. Modal exposes secret key names nowhere — not the CLI, not `Secret.info()` (name/created_at/created_by only), not even the gRPC `SecretMetadata` message. The only route is to mount the secret in a container and list the environment, so this runs `modal shell --secret <name>` and subtracts `_BASE_ENV_NAMES` / `_BASE_ENV_PREFIXES` (captured from a real container, and covering the `MODAL_TOKEN_*` credentials that live there too).
 
@@ -100,16 +121,22 @@ The probe string is fragile in a specific way: **`modal shell -c` shlex-splits t
 
 Because it starts compute, it is annotated `_mutating(destructive=False)` and kept out of `list_modal_resources` — putting it there would break that tool's `readOnlyHint` promise.
 
-### Log search (`search_modal_logs`)
+### Log search (`tools/logs.py`, text logic in `logsearch.py`)
 
 This is the only non-trivial bit of logic beyond shelling out. It fetches logs once (via the same streaming runner against `modal app logs` / `modal container logs`), then runs everything locally:
 
 - `filter_log_lines` drops `exclude`-matching lines first (used to strip known noise before grepping for signal).
 - `grep_lines` does `grep -C`-style context: builds `[i-ctx, i+ctx]` windows around each match, merges overlapping/adjacent windows into single blocks, formats each line as `> N: …` (match) or `  N: …` (context) with 1-based line numbers.
 
+Volume, not matching, is the practical failure mode. `modal app|container logs` has two modes: `--since` **without** `--tail` is *range mode* and fetches every entry in the range (measured: 664KB for 6h on one moderately busy app, vs 0 bytes for a bounded `--since 6h --until 5h`), while any `--tail` is *tail mode* anchored at `--until` or now. So a one-sided `since` is what makes a search blow the 30s fetch deadline and the output budget — which is why both log tools take `until`, why their messages tell the caller to bound the window rather than raise `timeout_seconds`, and why `search_modal_logs` has `prefilter` (passes `--search <pattern>`, a server-side substring filter added in modal 1.5, so non-matching lines are never fetched; requires `regex=False`, and it destroys real context, hence opt-in and flagged with `prefiltered`/`note` in the response).
+
+Window errors are UsageErrors — exit 2 with `Error: ...` on stderr (reversed range, range over 35 days, `tail` over 20000 = `modal._logs._FETCH_LIMIT`). `_check_log_window` catches what can be checked without parsing relative times, and `_log_failure_error` lifts the CLI's own `Error:` line into the `error` field so the caller sees "range cannot exceed 35 days" rather than "exit 2".
+
+In `search_modal_logs` responses, `returned` counts matched *lines* shown and `returned_blocks` counts blocks: `grep_lines` merges adjacent windows, so with `context_lines=0` 150 consecutive matches collapse into one block, and counting blocks would report that as "showing 1 of 150".
+
 If you change log behavior, note: stdout/stderr/system are the only streams Modal exposes via `app logs` — failure events shown on the Modal dashboard (e.g. "… exited with …") are *not* log lines and will not appear in `search_modal_logs` results. This is called out in tool docstrings and the README and should stay accurate.
 
-### Argument plumbing
+### Argument plumbing (`command.py`)
 
 A few tiny helpers keep argv construction consistent across the tools:
 
@@ -119,7 +146,7 @@ A few tiny helpers keep argv construction consistent across the tools:
 
 When adding a new action, follow the existing pattern: validate the action, build the argv with these helpers, pick the right runner, route through the matching response helper, and document it in the docstring (the README's tool list mirrors those docstrings — keep them in sync).
 
-### Prompts
+### Prompts (`prompts.py`)
 
 Four `@mcp.prompt()` functions (`debug_modal_app`, `deploy_and_verify`, `review_modal_account`, `investigate_modal_costs`) return workflow text. Clients fetch prompts on demand, so they cost nothing in per-session tool schema — that makes them the right home for multi-step guidance (and for caveats like "dashboard crash events are not log lines") instead of repeating it in every tool description. Keep the tool names inside prompt text in sync when tools change.
 
@@ -129,3 +156,4 @@ Four `@mcp.prompt()` functions (`debug_modal_app`, `deploy_and_verify`, `review_
 - The `mcp` dependency is pinned `>=1.9.2,<2` on purpose. `mcp` 2.x renamed `FastMCP` to `MCPServer` and moved the module, so `from mcp.server.fastmcp import FastMCP` raises `ModuleNotFoundError` there. `uvx mcp-modal` resolves dependencies fresh from PyPI metadata (it does not read `uv.lock`), so an unbounded specifier would break every new install the day 2.x is picked up.
 - `server.json` is the MCP registry manifest. Its `version` must match `pyproject.toml`'s `version` on every release — bump both together. Same for `packages[0].version` inside `server.json`.
 - `uv.lock` is committed. Update it via `uv sync` or `uv lock` when dependencies change.
+- `[tool.hatch.build.targets.wheel] packages = ["src/mcp_modal"]` ships the whole package directory, so `tools/` is included with no extra config. Worth a `uv build` + a peek inside the wheel after adding a subpackage.

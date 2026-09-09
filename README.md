@@ -15,6 +15,11 @@ Every tool shells out to your local `modal` CLI, so it operates against whatever
 
 The server is published on PyPI as [`mcp-modal`](https://pypi.org/project/mcp-modal/). No manual install is needed — the recommended way to run it is with [`uvx`](https://docs.astral.sh/uv/), which fetches and launches it on demand. Just point your MCP client at the command below (see [Configuration](#configuration)).
 
+Every version is also tagged and published on the
+[Releases page](https://github.com/george-bobby/mcp-modal/releases), with release notes and
+the same `.whl` / `.tar.gz` that PyPI serves attached — useful for pinning, air-gapped
+installs, or reading what changed between two versions.
+
 ## Logging in to Modal
 
 This server uses your local Modal credentials. If you haven't authenticated yet, run:
@@ -62,7 +67,7 @@ end up on different versions depending on when they first ran it, with no warnin
 
 - **`mcp-modal@latest`** re-resolves on every launch, so a restart picks up new releases.
   Costs one network round-trip at startup. Use it while the tool surface is still moving.
-- **`mcp-modal@0.3.0`** (an explicit version) is reproducible and upgrades become a
+- **`mcp-modal@0.4.0`** (an explicit version) is reproducible and upgrades become a
   deliberate one-line change. Use it once you want stability, or for a wider audience.
 
 To move a machine that is already stuck on an old cached build, switching it to either form
@@ -99,10 +104,12 @@ than being auto-approved:
   container, by design.
 
 Every tool declares [MCP tool annotations](https://modelcontextprotocol.io/specification/server/tools#tool-annotations),
-so a client can distinguish the three read-only tools (`list_modal_resources`,
-`get_modal_logs`, `search_modal_logs`, all `readOnlyHint: true`) from the seven that change
-remote state (`destructiveHint: true`, except `run_modal_app`). Auto-approve the reads;
-keep the writes behind a prompt.
+so a client can distinguish the four read-only tools (`list_modal_resources`,
+`get_modal_logs`, `search_modal_logs`, `analyze_modal_costs` — all `readOnlyHint: true`)
+from the eight that change remote state or start compute. Six of those eight are
+`destructiveHint: true`; the exceptions are `run_modal_app` and `inspect_modal_secret`,
+which start compute without removing or overwriting anything. Auto-approve the reads; keep
+the rest behind a prompt.
 
 ### Optional local-path allowlist
 
@@ -172,6 +179,8 @@ there.
      `auto` — anything starting `ta-` is a container), `timeout_seconds` (default 30),
      `env`, `since`, `until`, `tail`, `source` (`stdout`/`stderr`/`system`), `timestamps`,
      `follow`
+   - `since` without `tail` fetches *every* entry in the range; pass `until` as well (max
+     range 35 days, `tail` max 20,000) to keep a busy app's output bounded.
    - With `follow=True`, logs stream until the app/container stops or `timeout_seconds` is
      reached, returning a snapshot with `truncated: true`.
    - Only covers the stdout/stderr/system streams; some failures (e.g. a crash reported as
@@ -182,13 +191,25 @@ there.
    and searched locally, so you get context, regex, case control, and exact match counts.
    - Parameters: `identifier` (required), `pattern` (required), `target` (default `auto`),
      `regex`, `case_sensitive`, `context_lines` (default 3), `max_matches` (default 50),
-     `since`, `tail` (defaults to the last 1000 entries), `source`,
+     `since`, `until`, `tail` (defaults to the last 1000 entries), `source`,
      `exclude` (drop noise lines before searching, e.g. `"queue put failed"`),
-     `timestamps` (default `true`), `timeout_seconds`, `env`
+     `prefilter`, `timestamps` (default `true`), `timeout_seconds`, `env`
+   - **Bound the window on a busy app.** `since` on its own fetches everything from then
+     until now — hundreds of KB per hour on a chatty app, which the 30s fetch cuts off
+     (`logs_truncated: true`) and the output budget trims. `since` *and* `until` around the
+     minute you care about is the fix, and is usually kilobytes.
+   - `prefilter=True` pushes `pattern` down to Modal as a server-side substring filter
+     (`modal app logs --search`), so non-matching lines are never fetched — the lever for
+     logs too large to drain. Requires `regex=False`, and context lines then show only
+     other matches, so use it to locate the window and re-query it with `prefilter=False`.
    - Returns `match_count` and `matches`: timestamped, line-numbered context blocks where
      matched lines are prefixed with `>`, e.g. `> 8: 2026-06-04T... ValueError: bad input`.
      The whole fetched log is always searched, so `match_count` stays exact even when fewer
-     blocks are returned. Reports `excluded_lines` when `exclude` is used.
+     blocks are returned. `returned` is how many matches came back (adjacent matches merge
+     into one block, counted by `returned_blocks`). Reports `excluded_lines` when `exclude`
+     is used.
+   - A window the CLI rejects (reversed range, over 35 days, `tail` over 20,000) comes back
+     as `success: false` with Modal's own message, not a bare exit code.
    - Same stdout/stderr/system-only caveat as `get_modal_logs`.
 
 ### Deploy & run
@@ -272,8 +293,10 @@ there.
       layer. The only way to see which keys a secret defines is to mount it in a container
       and list the environment. So this tool runs `modal shell --secret <name>` with
       `compgen -e` (a bash builtin that prints exported variable *names* only — no value is
-      ever printed, even inside the container), then subtracts the ~35 variables the image
-      and Modal runtime set anyway.
+      ever printed, even inside the container), then subtracts the variables the image and
+      Modal runtime set anyway — 23 known names plus anything under six prefixes
+      (`MODAL_`, `PYTHON`, `PIP_`, `NVIDIA_`, `CUDA_`, `LD_LIBRARY_PATH`), which also
+      covers the `MODAL_TOKEN_*` credentials that live in every container.
     - **This one call starts remote compute**, so it costs a few cents and takes tens of
       seconds (longer when the image has to build). Every other read in this server is
       free; use `list_modal_resources(resource="secrets")` to see *which* secrets exist and
@@ -291,8 +314,10 @@ directly (in Claude Code they appear as `/mcp__mcp-modal__<name>`). Prompts are 
 demand, so unlike tools they cost nothing in per-session context:
 
 - **`debug_modal_app`** (`app_name`, optional `symptom`) — an ordered triage routine: check
-  the app is up, search logs for tracebacks with context, fall back to the log tail,
-  inspect containers, then compare against deployment history and consider a rollback.
+  the app is up, search logs for tracebacks with context, narrow the window instead of
+  widening it when a log fetch comes back truncated, fall back to the log tail, check
+  whether sibling apps were hit in the same window, inspect containers, then compare
+  against deployment history and consider a rollback.
 - **`deploy_and_verify`** (`absolute_path_to_app`, optional `env`) — confirm the target
   workspace, deploy, report the live URLs, then *verify* the app is healthy instead of
   assuming it.
@@ -314,6 +339,10 @@ startup banner and the traceback at the end both survive.
 Searching is never capped before the fact: `search_modal_logs` greps the whole fetched log
 and only limits how many context blocks come back, so `match_count` is always exact.
 
+Raising `timeout_seconds` or the budget is rarely the right answer to a truncated log
+search — fetching less is. Bound the window with `since` **and** `until`, filter with
+`source`/`exclude`, or set `prefilter=True` to drop non-matching lines inside Modal.
+
 Set `MCP_MODAL_MAX_OUTPUT_CHARS` to raise or lower the budget, or to `0` to disable capping
 entirely:
 
@@ -328,34 +357,6 @@ entirely:
   }
 }
 ```
-
-## Upgrading from 0.2.x
-
-0.3.0 replaces the 26 single-purpose tools with 10 grouped ones. Nothing was dropped — every
-operation is still reachable — but the names and arguments changed:
-
-| 0.2.x | 0.3.0 |
-| --- | --- |
-| `list_modal_apps` | `list_modal_resources(resource="apps")` |
-| `get_modal_app_history` | `list_modal_resources(resource="app_history", name=...)` |
-| `list_modal_containers` | `list_modal_resources(resource="containers")` |
-| `list_modal_volumes` | `list_modal_resources(resource="volumes")` |
-| `list_modal_volume_contents` | `list_modal_resources(resource="volume_files", name=...)` |
-| `list_modal_secrets` | `list_modal_resources(resource="secrets")` |
-| `list_modal_environments` | `list_modal_resources(resource="environments")` |
-| `get_modal_profile` | `list_modal_resources(resource="profile")` |
-| `get_modal_app_logs` / `get_modal_container_logs` | `get_modal_logs` (auto-detects the target) |
-| `stop_modal_app` / `rollback_modal_app` | `manage_modal_app(action="stop"/"rollback")` |
-| `exec_modal_container` / `stop_modal_container` | `manage_modal_container(action="exec"/"stop")` |
-| `create_modal_volume` / `delete_modal_volume` / `rename_modal_volume` | `manage_modal_volume(action=...)` |
-| `put_modal_volume_file` / `get_modal_volume_file` / `copy_modal_volume_files` / `remove_modal_volume_file` | `modal_volume_files(action="put"/"get"/"cp"/"rm")` |
-| `create_modal_secret` / `delete_modal_secret` | `manage_modal_secret(action="create"/"delete")` |
-
-Also new in 0.3.0: every volume tool now accepts `env` (volumes are environment-scoped, and
-0.2.x silently used the default environment for file operations), `modal_volume_files`
-supports `recursive` for `cp`, and `search_modal_logs`/`get_modal_logs` accept
-`target="auto"`. The redundant `search` argument on the log tools is gone — use
-`search_modal_logs`, which returns context instead of bare matching lines.
 
 ## Response Format
 
@@ -384,6 +385,18 @@ All tools return responses in a standardized format, with slight variations depe
     "logs": "...",          # or "output" for run/exec
     "truncated": False,     # True when cut off at timeout_seconds
     "output_capped": False, # True when text was trimmed to fit MCP_MODAL_MAX_OUTPUT_CHARS
+    "command": "executed command string"
+}
+
+# Log search (search_modal_logs):
+{
+    "success": True,
+    "match_count": 12,      # exact: the whole fetched log is searched
+    "returned": 5,          # matches actually shown
+    "returned_blocks": 2,   # adjacent matches merge into one context block
+    "matches": ["> 8: ...", ...],
+    "logs_truncated": False,  # True when the log fetch hit timeout_seconds
+    "output_capped": False,
     "command": "executed command string"
 }
 

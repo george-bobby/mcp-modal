@@ -27,6 +27,7 @@ jobs:
       # 'true' only when this run actually uploaded a new version, so the registry
       # job below knows whether there is anything for it to publish.
       published: ${{ steps.check.outputs.exists == 'false' }}
+      version: ${{ steps.check.outputs.version }}
     steps:
       - uses: actions/checkout@v5
       - name: Install uv
@@ -53,6 +54,15 @@ jobs:
       - name: Publish to PyPI
         if: steps.check.outputs.exists == 'false'
         run: uv publish --trusted-publishing always
+      # Hand the exact artifacts to the release job rather than letting it rebuild:
+      # a rebuild can differ byte-for-byte from what PyPI now serves, and a release
+      # asset that doesn't match the published package is worse than no asset.
+      - name: Upload artifacts for the release job
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          if-no-files-found: error
 
   registry:
     name: Publish to MCP Registry (OIDC)
@@ -80,3 +90,68 @@ jobs:
         run: ./mcp-publisher login github-oidc
       - name: Publish server.json
         run: ./mcp-publisher publish
+
+  release:
+    name: Create the GitHub Release
+    needs: pypi
+    # Only a tag names a version to release. A workflow_dispatch on a branch has no
+    # tag, so there is nothing to attach a release to — skip rather than guess.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # creating a release writes to the repo
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # release notes are built from the tagged commit's message
+      - name: Download the published artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      # The release body is the tagged commit's own message. Annotated tags here carry
+      # only "vX.Y.Z", while the release commit message is the actual changelog — so
+      # read that, drop the trailing Co-Authored-By lines, and add install instructions.
+      - name: Build the release notes
+        id: notes
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          subject=$(git log -1 --format=%s "$tag")
+          headline="${subject#*: }"
+          {
+            echo "## ${headline}"
+            echo
+            git log -1 --format=%b "$tag" | grep -v '^Co-Authored-By:'
+            echo
+            echo "---"
+            echo
+            echo "### Install"
+            echo
+            echo '```bash'
+            echo "uvx mcp-modal@${version}          # run this exact version"
+            echo "claude mcp add mcp-modal -- uvx mcp-modal@${version}"
+            echo '```'
+            echo
+            echo "Also on PyPI: [mcp-modal ${version}](https://pypi.org/project/mcp-modal/${version}/)."
+            echo "The \`.whl\` and \`.tar.gz\` below are the artifacts published to PyPI for this version."
+          } > notes.md
+          echo "title=${version} — ${headline}" >> "$GITHUB_OUTPUT"
+      # Idempotent: re-running for an existing release refreshes its notes and assets
+      # instead of failing, which matches the re-pushed-tag behavior of the jobs above.
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --title "${{ steps.notes.outputs.title }}" --notes-file notes.md
+            gh release upload "$tag" dist/* --clobber
+          else
+            gh release create "$tag" dist/* \
+              --title "${{ steps.notes.outputs.title }}" \
+              --notes-file notes.md \
+              --verify-tag
+          fi
