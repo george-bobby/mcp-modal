@@ -24,6 +24,7 @@ async def list_modal_resources(
     name: Optional[str] = None,
     path: str = "/",
     env: Optional[str] = None,
+    profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Read-only lookup of everything in the Modal account. Start here to find the app name,
@@ -43,6 +44,7 @@ async def list_modal_resources(
         name: App name/ID, app ID filter, or volume name — see `resource`.
         path: Path inside the volume for "volume_files". Default "/".
         env: Modal environment. Ignored for "environments"/"profile".
+        profile: Modal profile for this call only. Defaults to the active profile.
 
     Returns: {<resource key>: [...]} — e.g. "apps", "containers", "contents". Listings
     over 200 entries are capped, with `omitted_items` giving the count dropped.
@@ -60,32 +62,39 @@ async def list_modal_resources(
         if resource == "apps":
             command = ["modal", "app", "list", "--json"]
             _add_env(command, env)
-            return json_listing(command, "apps", "Failed to list apps")
+            return json_listing(command, "apps", "Failed to list apps", profile=profile)
 
         if resource == "app_history":
             command = ["modal", "app", "history", "--json"]
             _add_env(command, env)
             command.extend(["--", name])
-            return json_listing(command, "history", "Failed to get app history", app_identifier=name)
+            return json_listing(
+                command, "history", "Failed to get app history", profile=profile, app_identifier=name
+            )
 
         if resource == "containers":
             command = ["modal", "container", "list", "--json"]
             if name:
                 command.extend(["--app-id", name])
             _add_env(command, env)
-            return json_listing(command, "containers", "Failed to list containers")
+            return json_listing(command, "containers", "Failed to list containers", profile=profile)
 
         if resource == "volumes":
             command = ["modal", "volume", "list", "--json"]
             _add_env(command, env)
-            return json_listing(command, "volumes", "Failed to list volumes")
+            return json_listing(command, "volumes", "Failed to list volumes", profile=profile)
 
         if resource == "volume_files":
             command = ["modal", "volume", "ls", "--json"]
             _add_env(command, env)
             command.extend(["--", name, path])
             response = json_listing(
-                command, "contents", "Failed to list volume contents", volume_name=name, path=path
+                command,
+                "contents",
+                "Failed to list volume contents",
+                profile=profile,
+                volume_name=name,
+                path=path,
             )
             if not response["success"]:
                 return response
@@ -106,16 +115,21 @@ async def list_modal_resources(
         if resource == "secrets":
             command = ["modal", "secret", "list", "--json"]
             _add_env(command, env)
-            return json_listing(command, "secrets", "Failed to list secrets")
+            return json_listing(command, "secrets", "Failed to list secrets", profile=profile)
 
         if resource == "environments":
             return json_listing(
-                ["modal", "environment", "list", "--json"], "environments", "Failed to list environments"
+                ["modal", "environment", "list", "--json"],
+                "environments",
+                "Failed to list environments",
+                profile=profile,
             )
 
         # resource == "profile"
-        current = run_modal_command(["modal", "profile", "current"])
-        listing = run_modal_command(["modal", "profile", "list", "--json"])
+        # `profile` scopes these two calls too, so the response reflects the effective
+        # profile (the override), not just the stored default.
+        current = run_modal_command(["modal", "profile", "current"], profile=profile)
+        listing = run_modal_command(["modal", "profile", "list", "--json"], profile=profile)
         response = {"success": current["success"] and listing["success"]}
         if current["success"]:
             response["active_profile"] = (current["stdout"] or "").strip()

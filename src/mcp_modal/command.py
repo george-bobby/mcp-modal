@@ -4,6 +4,10 @@ Every tool ends up here: it assembles an argv list with the `_add_env` / `_uv_pr
 helpers and hands it to one of the two runners. `run_modal_command` is for commands that
 terminate on their own; `run_modal_streaming_command` is for anything that streams or may
 hang, and is bounded by a timeout rather than by output volume.
+
+Per-call profile selection rides on the `MODAL_PROFILE` environment variable, which the
+Modal CLI honors over the stored active profile — so targeting another profile never
+rewrites `~/.modal.toml` and stays safe under concurrent calls.
 """
 import os
 import signal
@@ -34,6 +38,24 @@ def _add_env(command: List[str], env: Optional[str]) -> List[str]:
     if env:
         command.extend(["-e", env])
     return command
+
+
+# The Modal CLI resolves the profile from MODAL_PROFILE first, falling back to the
+# stored active profile in ~/.modal.toml. Scoping the override to the child's
+# environment (rather than `modal profile activate`, which rewrites the file) keeps
+# per-call selection isolated — concurrent calls with different profiles can't race.
+_MODAL_PROFILE_ENV = "MODAL_PROFILE"
+
+
+def _profile_env(profile: Optional[str]) -> Optional[Dict[str, str]]:
+    """Build the child environment selecting `profile`, or None to inherit.
+
+    Returns None (plain inheritance) when no profile is given, so the default path —
+    active profile from ~/.modal.toml — is byte-for-byte unchanged.
+    """
+    if not profile:
+        return None
+    return {**os.environ, _MODAL_PROFILE_ENV: profile}
 
 
 def _redact_text(text: Optional[str], secrets: Optional[List[str]]) -> Optional[str]:
@@ -98,11 +120,15 @@ def run_modal_command(
     command: List[str],
     uv_directory: Optional[str] = None,
     redact: Optional[List[str]] = None,
+    profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run a Modal CLI command to completion and return the result.
 
     `redact`, if given, is a list of secret values scrubbed from the logged command and
     from every returned text field (command/stdout/stderr/error) — see _redact_text.
+
+    `profile`, if given, selects the Modal profile for this call only (via
+    MODAL_PROFILE); the stored active profile is never changed.
 
     Output is returned uncapped: callers that echo it to the client cap it via
     standardize_result / _add_capped, while callers that parse it (JSON listings) need
@@ -120,6 +146,7 @@ def run_modal_command(
             text=True,
             check=True,
             stdin=subprocess.DEVNULL,
+            env=_profile_env(profile),
         )
         return {
             "success": True,
@@ -138,13 +165,19 @@ def run_modal_command(
 
 
 def run_modal_streaming_command(
-    command: List[str], timeout_seconds: int, uv_directory: Optional[str] = None
+    command: List[str],
+    timeout_seconds: int,
+    uv_directory: Optional[str] = None,
+    profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run a Modal CLI command that may stream indefinitely (e.g. `modal app logs`, `modal serve`).
 
     Captures whatever output is produced within `timeout_seconds`. If the command is
     still running at the deadline (i.e. it was streaming), the whole process group is
     terminated and the partial output is returned with timed_out=True.
+
+    `profile`, if given, selects the Modal profile for this call only (via
+    MODAL_PROFILE); the stored active profile is never changed.
     """
     full_command = _uv_prefixed(command, uv_directory)
     proc = subprocess.Popen(
@@ -153,6 +186,7 @@ def run_modal_streaming_command(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env=_profile_env(profile),
         # New session so `modal` (a possible grandchild under `uv run`) can be killed as a group.
         start_new_session=True,
     )
