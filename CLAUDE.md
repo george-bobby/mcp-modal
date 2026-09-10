@@ -67,7 +67,7 @@ Each `@mcp.tool()` passes `annotations=` built by `_read_only()` or `_mutating()
 
 ### The core idea: shell out to `modal`
 
-The server holds no Modal SDK state. Every tool builds an argv list, runs the local `modal` CLI as a subprocess, and shapes the stdout/stderr into a standard response. Credentials, profiles, and environments come from the host's `~/.modal.toml`.
+The server holds no Modal SDK state. Every tool builds an argv list, runs the local `modal` CLI as a subprocess, and shapes the stdout/stderr into a standard response. Credentials, profiles, and environments come from the host's `~/.modal.toml`. Every tool also takes an optional `profile` argument that scopes that call to another profile via the CLI's `MODAL_PROFILE` override — the stored active profile is never rewritten, so concurrent calls with different profiles are safe.
 
 There are two execution modes for account-scoped vs project-scoped commands, controlled by a single helper:
 
@@ -141,6 +141,7 @@ If you change log behavior, note: stdout/stderr/system are the only streams Moda
 A few tiny helpers keep argv construction consistent across the tools:
 
 - `_add_env(command, env)` — appends `-e <env>` when the caller passed an environment. Only call it for subcommands that actually accept `-e/--env`. **All `modal volume` subcommands do** (create, delete, rename, list, ls, put, get, cp, rm — volumes are environment-scoped, so omitting it silently targets the default environment). **`modal container logs|exec|stop` do not** — only `modal container list` takes `-e`, because a container ID is already globally unique. Check the CLI reference before adding it to a new command.
+- `_profile_env(profile)` — returns the child `env=` mapping selecting a profile via `MODAL_PROFILE`, or `None` (plain inheritance) when omitted. Both runners take `profile=` and pass it through; `json_listing` takes it too, since it runs the command itself. Never implement profile selection as `modal profile activate` — that rewrites `~/.modal.toml` and races under concurrent calls.
 - `_uv_prefixed(command, uv_directory)` — see above.
 - `_resolve_log_target(identifier, target)` — maps `target="auto"` to app vs container from the `ta-` ID prefix, so the log tools take either kind of identifier.
 

@@ -12,6 +12,7 @@ async def manage_modal_app(
     app_identifier: str,
     version: Optional[str] = None,
     env: Optional[str] = None,
+    profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Change a deployed app's state. Both actions affect live traffic.
@@ -23,6 +24,7 @@ async def manage_modal_app(
         version: Rollback target; omit for the immediately preceding version. List valid
             versions with list_modal_resources(resource="app_history", name=...).
         env: Modal environment to target.
+        profile: Modal profile for this call only. Defaults to the active profile.
 
     Returns: {message, stdout, stderr} or {error}.
     """
@@ -35,7 +37,7 @@ async def manage_modal_app(
             command = ["modal", "app", "stop"]
             _add_env(command, env)
             command.extend(["--", app_identifier])
-            result = run_modal_command(command)
+            result = run_modal_command(command, profile=profile)
             return standardize_result(
                 result, f"Successfully stopped app {app_identifier}", "Failed to stop app"
             )
@@ -45,7 +47,7 @@ async def manage_modal_app(
         command.extend(["--", app_identifier])
         if version:
             command.append(str(version))
-        result = run_modal_command(command)
+        result = run_modal_command(command, profile=profile)
         return standardize_result(
             result, f"Successfully rolled back app {app_identifier}", "Failed to roll back app"
         )
@@ -60,6 +62,7 @@ async def manage_modal_container(
     container_id: str,
     command: Optional[List[str]] = None,
     timeout_seconds: int = 60,
+    profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Act on one running container. Find IDs with
@@ -75,6 +78,7 @@ async def manage_modal_container(
         command: For "exec": argv list, e.g. ["python", "-c", "print('hi')"] or
             ["ls", "-la", "/"].
         timeout_seconds: For "exec": max seconds to wait. Default 60.
+        profile: Modal profile for this call only. Defaults to the active profile.
 
     Returns: exec → {output, returncode, truncated, output_capped}; stop → {message}.
     """
@@ -85,7 +89,9 @@ async def manage_modal_container(
             if command:
                 return {"success": False, "error": "`command` is only valid with action='exec'"}
             # `-y` avoids the interactive confirmation prompt.
-            result = run_modal_command(["modal", "container", "stop", "-y", "--", container_id])
+            result = run_modal_command(
+                ["modal", "container", "stop", "-y", "--", container_id], profile=profile
+            )
             return standardize_result(
                 result, f"Successfully stopped container {container_id}", "Failed to stop container"
             )
@@ -97,7 +103,7 @@ async def manage_modal_container(
         # injection AND lets the user command carry its own flags (e.g. `ls -la`) without
         # modal trying to interpret them.
         full_command = ["modal", "container", "exec", "--no-pty", "--", container_id] + command
-        result = run_modal_streaming_command(full_command, timeout_seconds)
+        result = run_modal_streaming_command(full_command, timeout_seconds, profile=profile)
         failed = result["returncode"] not in (0, None) and not result["timed_out"]
         response = {
             "success": not failed,

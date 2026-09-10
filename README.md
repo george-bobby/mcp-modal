@@ -155,10 +155,19 @@ use the profile's default (or `MODAL_ENVIRONMENT`). The exception is `manage_mod
 and container logs — a container ID is globally unique and the CLI accepts no environment
 there.
 
+Every tool also takes an optional `profile` argument to run that call against a different
+Modal profile (account) without switching your stored default: `list_modal_resources`
+with `resource="apps", profile="work"` lists that profile's apps, while `modal profile
+current` on your machine still reports the same default afterwards. Selection is scoped
+to the single call (via the CLI's `MODAL_PROFILE` override), so concurrent calls with
+different profiles can't interfere. To change the stored default itself, use
+`modal profile activate <name>` in a terminal; to see all profiles, use
+`list_modal_resources(resource="profile")`.
+
 ### Read-only
 
 1. **List Modal Resources** (`list_modal_resources`) — one lookup for the whole account.
-   - Parameters: `resource` (required), `name`, `path` (default `/`), `env`
+   - Parameters: `resource` (required), `name`, `path` (default `/`), `env`, `profile`
    - `resource` values:
      | value | returns | `name` means |
      | --- | --- | --- |
@@ -177,8 +186,8 @@ there.
 2. **Get Modal Logs** (`get_modal_logs`) — fetch or stream logs for an app *or* a container.
    - Parameters: `identifier` (required), `target` (`auto`/`app`/`container`, default
      `auto` — anything starting `ta-` is a container), `timeout_seconds` (default 30),
-     `env`, `since`, `until`, `tail`, `source` (`stdout`/`stderr`/`system`), `timestamps`,
-     `follow`
+     `env`, `profile`, `since`, `until`, `tail`, `source` (`stdout`/`stderr`/`system`),
+     `timestamps`, `follow`
    - `since` without `tail` fetches *every* entry in the range; pass `until` as well (max
      range 35 days, `tail` max 20,000) to keep a busy app's output bounded.
    - With `follow=True`, logs stream until the app/container stops or `timeout_seconds` is
@@ -193,7 +202,7 @@ there.
      `regex`, `case_sensitive`, `context_lines` (default 3), `max_matches` (default 50),
      `since`, `until`, `tail` (defaults to the last 1000 entries), `source`,
      `exclude` (drop noise lines before searching, e.g. `"queue put failed"`),
-     `prefilter`, `timestamps` (default `true`), `timeout_seconds`, `env`
+     `prefilter`, `timestamps` (default `true`), `timeout_seconds`, `env`, `profile`
    - **Bound the window on a busy app.** `since` on its own fetches everything from then
      until now — hundreds of KB per hour on a chatty app, which the 30s fetch cuts off
      (`logs_truncated: true`) and the output budget trims. `since` *and* `until` around the
@@ -217,14 +226,14 @@ there.
 4. **Deploy Modal App** (`deploy_modal_app`)
    - Deploys a Modal app (`modal deploy`). Deployed web endpoints persist, so any links in
      the output are live and shareable (returned in `urls`).
-   - Parameters: `absolute_path_to_app` (required), `env`, `name`, `tag`,
+   - Parameters: `absolute_path_to_app` (required), `env`, `profile`, `name`, `tag`,
      `strategy` (`rolling`/`recreate`), `stream_logs`
    - The app's directory must use `uv` with `modal` installed in its virtualenv.
 
 5. **Run Modal App** (`run_modal_app`)
    - Runs a function or local entrypoint once and collects its output (`modal run`).
-   - Parameters: `absolute_path_to_app` (required), `function_name`, `env`, `detach`,
-     `timeout_seconds` (default 120)
+   - Parameters: `absolute_path_to_app` (required), `function_name`, `env`, `profile`,
+     `detach`, `timeout_seconds` (default 120)
    - Returns a snapshot with `truncated: true` if the run is still going at the timeout.
      Pass `detach=True` to keep long jobs alive on Modal past the timeout.
 
@@ -237,27 +246,29 @@ there.
 6. **Manage Modal App** (`manage_modal_app`) — `action` is `stop` (shut the app down and
    terminate its containers) or `rollback` (redeploy a previous version).
    - Parameters: `action` (required), `app_identifier` (required), `version` (rollback
-     only — defaults to the immediately preceding version), `env`
+     only — defaults to the immediately preceding version), `env`, `profile`
 
 7. **Manage Modal Container** (`manage_modal_container`) — `action` is `exec` (run a command
    inside a running container, `modal container exec --no-pty`) or `stop` (terminate it).
    - Parameters: `action` (required), `container_id` (required), `command` (exec only —
-     a list of args, e.g. `["python", "-c", "print('hi')"]`), `timeout_seconds` (default 60)
+     a list of args, e.g. `["python", "-c", "print('hi')"]`), `timeout_seconds` (default 60),
+     `profile`
 
 8. **Manage Modal Volume** (`manage_modal_volume`) — `action` is `create`, `delete`
    (the volume **and all its data**, irreversible), or `rename`.
-   - Parameters: `action` (required), `volume_name` (required), `new_name` (rename only), `env`
+   - Parameters: `action` (required), `volume_name` (required), `new_name` (rename only), `env`,
+     `profile`
 
 9. **Modal Volume Files** (`modal_volume_files`) — write operations on a volume's files:
    `action` is `put` (upload), `get` (download), `cp` (copy inside the volume), or `rm`.
    - Parameters: `action` (required), `volume_name` (required), `local_path`, `remote_path`,
-     `paths` (for `cp`: sources then destination), `recursive`, `force`, `env`
+     `paths` (for `cp`: sources then destination), `recursive`, `force`, `env`, `profile`
    - `action="get"` with `local_path="-"` returns the file contents instead of writing a file.
    - To *list* a volume's contents use `list_modal_resources(resource="volume_files")`.
 
 10. **Manage Modal Secret** (`manage_modal_secret`) — `action` is `create` or `delete`.
     - Parameters: `action` (required), `secret_name` (required), `key_values` (dict),
-      `from_dotenv` (path), `from_json` (path), `force`, `env`. Creating requires at least
+      `from_dotenv` (path), `from_json` (path), `force`, `env`, `profile`. Creating requires at least
       one of `key_values`, `from_dotenv`, or `from_json`.
     - Secret values are redacted from every field returned, including error output.
     - To list secret names use `list_modal_resources(resource="secrets")`.
@@ -268,7 +279,7 @@ there.
     `modal billing` once and aggregates locally, so you get ranked totals and
     period-over-period changes instead of hundreds of raw rows.
     - Parameters: `view` (default `by_app`), `period`, `start`, `end`, `resolution`
-      (`d`/`h`), `timezone`, `app`, `environment`, `top_n` (default 10), `tag_names`
+      (`d`/`h`), `timezone`, `app`, `environment`, `top_n` (default 10), `tag_names`, `profile`
     - `view` values:
       | value | answers |
       | --- | --- |
@@ -288,7 +299,7 @@ there.
 
 12. **Inspect Modal Secret** (`inspect_modal_secret`) — lists the **key names** inside a
     secret, never the values.
-    - Parameters: `secret_name` (required), `env`, `image`, `timeout_seconds` (default 300)
+    - Parameters: `secret_name` (required), `env`, `profile`, `image`, `timeout_seconds` (default 300)
     - Modal exposes no API for this by design: not the CLI, not the SDK, not the gRPC
       layer. The only way to see which keys a secret defines is to mount it in a container
       and list the environment. So this tool runs `modal shell --secret <name>` with

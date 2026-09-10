@@ -16,6 +16,7 @@ async def manage_modal_volume(
     volume_name: str,
     new_name: Optional[str] = None,
     env: Optional[str] = None,
+    profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Volume lifecycle. For the files inside a volume use modal_volume_files (writes) or
@@ -28,6 +29,7 @@ async def manage_modal_volume(
         new_name: Required for "rename".
         env: Modal environment. Volumes are environment-scoped, so this must match the
             environment the volume lives in.
+        profile: Modal profile for this call only. Defaults to the active profile.
 
     Returns: {message, stdout, stderr} or {error}.
     """
@@ -40,7 +42,7 @@ async def manage_modal_volume(
             command = ["modal", "volume", "create"]
             _add_env(command, env)
             command.extend(["--", volume_name])
-            result = run_modal_command(command)
+            result = run_modal_command(command, profile=profile)
             return standardize_result(
                 result, f"Successfully created volume {volume_name}", "Failed to create volume"
             )
@@ -50,7 +52,7 @@ async def manage_modal_volume(
             command = ["modal", "volume", "delete", "-y"]
             _add_env(command, env)
             command.extend(["--", volume_name])
-            result = run_modal_command(command)
+            result = run_modal_command(command, profile=profile)
             return standardize_result(
                 result, f"Successfully deleted volume {volume_name}", "Failed to delete volume"
             )
@@ -59,7 +61,7 @@ async def manage_modal_volume(
         command = ["modal", "volume", "rename", "-y"]
         _add_env(command, env)
         command.extend(["--", volume_name, new_name])
-        result = run_modal_command(command)
+        result = run_modal_command(command, profile=profile)
         return standardize_result(
             result,
             f"Successfully renamed volume {volume_name} to {new_name}",
@@ -80,6 +82,7 @@ async def modal_volume_files(
     recursive: bool = False,
     force: bool = False,
     env: Optional[str] = None,
+    profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Write operations on a volume's files. To LIST a volume's contents use
@@ -97,6 +100,7 @@ async def modal_volume_files(
         recursive: Needed to "rm" or "cp" a directory.
         force: Overwrite existing files ("put"/"get").
         env: Modal environment the volume lives in.
+        profile: Modal profile for this call only. Defaults to the active profile.
 
     Returns: {message, stdout, stderr} or {error}. When MCP_MODAL_ALLOWED_LOCAL_PATHS is
     set, "put"/"get" are refused for local paths outside the allowlist.
@@ -116,7 +120,7 @@ async def modal_volume_files(
                 command.append("-f")
             _add_env(command, env)
             command.extend(["--", volume_name, local_path, destination])
-            result = run_modal_command(command)
+            result = run_modal_command(command, profile=profile)
             return standardize_result(
                 result,
                 f"Successfully uploaded {local_path} to {volume_name}:{destination}",
@@ -137,7 +141,7 @@ async def modal_volume_files(
                 command.append("--force")
             _add_env(command, env)
             command.extend(["--", volume_name, remote_path, destination])
-            result = run_modal_command(command)
+            result = run_modal_command(command, profile=profile)
             return standardize_result(
                 result,
                 f"Successfully downloaded {remote_path} from volume {volume_name}",
@@ -155,7 +159,7 @@ async def modal_volume_files(
                 command.append("-r")
             _add_env(command, env)
             command.extend(["--", volume_name] + paths)
-            result = run_modal_command(command)
+            result = run_modal_command(command, profile=profile)
             return standardize_result(
                 result,
                 f"Successfully copied files in volume {volume_name}",
@@ -170,7 +174,7 @@ async def modal_volume_files(
             command.append("-r")
         _add_env(command, env)
         command.extend(["--", volume_name, remote_path])
-        result = run_modal_command(command)
+        result = run_modal_command(command, profile=profile)
         return standardize_result(
             result,
             f"Successfully deleted {remote_path} from volume {volume_name}",

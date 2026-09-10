@@ -26,6 +26,7 @@ async def analyze_modal_costs(
     environment: Optional[str] = None,
     top_n: int = 10,
     tag_names: Optional[str] = None,
+    profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Break down what the workspace is spending (`modal billing`). Costs are fetched once
@@ -61,6 +62,7 @@ async def analyze_modal_costs(
         environment: Only include rows from this Modal environment.
         top_n: How many groups/movers to return. Default 10.
         tag_names: Comma-separated cost-attribution tag names to include.
+        profile: Modal profile for this call only. Defaults to the active profile.
 
     Returns: {total_cost, groups | intervals, explanation (for timeline), row_count}.
         Costs are strings of US dollars with 4 decimals. `total_cost` always covers every
@@ -79,7 +81,7 @@ async def analyze_modal_costs(
 
     try:
         if view == "rates":
-            rates = run_modal_command(["modal", "billing", "rates", "--json"])
+            rates = run_modal_command(["modal", "billing", "rates", "--json"], profile=profile)
             if not rates["success"] and "No such command" in (rates.get("stderr") or ""):
                 return {
                     "success": False,
@@ -98,7 +100,7 @@ async def analyze_modal_costs(
             command = ["modal", "billing", "summary", "--json"]
             if period:
                 command.extend(["--for", period])
-            result = run_modal_command(command)
+            result = run_modal_command(command, profile=profile)
             if not result["success"] and "No such command" in (result.get("stderr") or ""):
                 # `modal billing summary` and `rates` arrived in client 1.5; older clients
                 # only have `report`, and fail with a bare usage error.
@@ -131,7 +133,7 @@ async def analyze_modal_costs(
             # The resource column (CPU / GPU type / memory / ...) only exists with this flag.
             command.append("--show-resources")
 
-        result = run_modal_command(command)
+        result = run_modal_command(command, profile=profile)
         response = handle_json_response(result, "Failed to get billing report")
         if not response["success"]:
             return response

@@ -15,6 +15,7 @@ from ..output import _add_capped, extract_urls, standardize_result
 async def deploy_modal_app(
     absolute_path_to_app: str,
     env: Optional[str] = None,
+    profile: Optional[str] = None,
     name: Optional[str] = None,
     tag: Optional[str] = None,
     strategy: Optional[str] = None,
@@ -28,6 +29,7 @@ async def deploy_modal_app(
         absolute_path_to_app: Absolute path to the app file. Its directory must use `uv`
             and have `modal` installed in its virtualenv.
         env: Modal environment to deploy into.
+        profile: Modal profile for this call only. Defaults to the active profile.
         name: Deployment name (`--name`).
         tag: Version tag (`--tag`).
         strategy: Rollout strategy — "rolling" or "recreate".
@@ -52,7 +54,7 @@ async def deploy_modal_app(
         # misread as a CLI flag (option injection).
         command.extend(["--", app_name])
 
-        result = run_modal_command(command, uv_directory)
+        result = run_modal_command(command, uv_directory, profile=profile)
         # URLs are extracted from the full output before capping, so a link near the end
         # of a long deploy log is still surfaced even when the text itself is trimmed.
         urls = extract_urls(result.get("stdout"), result.get("stderr"))
@@ -72,6 +74,7 @@ async def run_modal_app(
     absolute_path_to_app: str,
     function_name: Optional[str] = None,
     env: Optional[str] = None,
+    profile: Optional[str] = None,
     detach: bool = False,
     timeout_seconds: int = 120,
 ) -> Dict[str, Any]:
@@ -85,6 +88,7 @@ async def run_modal_app(
         function_name: Function/entrypoint name, e.g. "main". Omit if the module has
             exactly one.
         env: Modal environment to target.
+        profile: Modal profile for this call only. Defaults to the active profile.
         detach: Keep the run alive on Modal past this call (`--detach`) — for long jobs.
         timeout_seconds: Max seconds to collect output. Default 120.
 
@@ -101,7 +105,7 @@ async def run_modal_app(
         # `--` ends option parsing so a func ref starting with `-` can't be misread as a flag.
         command.extend(["--", func_ref])
 
-        result = run_modal_streaming_command(command, timeout_seconds, uv_directory)
+        result = run_modal_streaming_command(command, timeout_seconds, uv_directory, profile=profile)
         failed = result["returncode"] not in (0, None) and not result["timed_out"]
         if failed:
             response = {

@@ -20,6 +20,7 @@ async def manage_modal_secret(
     from_json: Optional[str] = None,
     force: bool = False,
     env: Optional[str] = None,
+    profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create or delete a secret. To list secret names use
@@ -35,6 +36,7 @@ async def manage_modal_secret(
         from_dotenv / from_json: For "create": load key/values from a local file instead.
         force: For "create": overwrite an existing secret.
         env: Modal environment to target.
+        profile: Modal profile for this call only. Defaults to the active profile.
 
     Returns: {message, stdout, stderr} or {error}, with values redacted.
     """
@@ -46,7 +48,7 @@ async def manage_modal_secret(
             command = ["modal", "secret", "delete", "-y"]
             _add_env(command, env)
             command.extend(["--", secret_name])
-            result = run_modal_command(command)
+            result = run_modal_command(command, profile=profile)
             return standardize_result(
                 result, f"Successfully deleted secret {secret_name}", "Failed to delete secret"
             )
@@ -75,7 +77,7 @@ async def manage_modal_secret(
         # the happy-path command string. A failed create (e.g. secret exists, no --force)
         # would otherwise echo the plaintext values back in the error.
         secret_values = list(key_values.values()) if key_values else None
-        result = run_modal_command(command, redact=secret_values)
+        result = run_modal_command(command, redact=secret_values, profile=profile)
         return standardize_result(
             result, f"Successfully created secret {secret_name}", "Failed to create secret"
         )
@@ -122,6 +124,7 @@ def _secret_key_names(env_names: List[str]) -> List[str]:
 async def inspect_modal_secret(
     secret_name: str,
     env: Optional[str] = None,
+    profile: Optional[str] = None,
     image: Optional[str] = None,
     timeout_seconds: int = 300,
 ) -> Dict[str, Any]:
@@ -146,6 +149,7 @@ async def inspect_modal_secret(
     Args:
         secret_name: Name of the secret, from list_modal_resources(resource="secrets").
         env: Modal environment the secret lives in.
+        profile: Modal profile for this call only. Defaults to the active profile.
         image: Optional container image. Omit it to use Modal's default image, which is
             built to match this server's Python — that is the most reliable choice. Pass one
             (e.g. "python:3.12-slim") if the workspace's image builder rejects that Python.
@@ -165,7 +169,7 @@ async def inspect_modal_secret(
         _add_env(command, env)
         command.extend(["-c", _KEYS_PROBE])
 
-        result = run_modal_streaming_command(command, timeout_seconds)
+        result = run_modal_streaming_command(command, timeout_seconds, profile=profile)
         combined = (result["stdout"] or "") + "\n" + (result["stderr"] or "")
         if _KEYS_START not in combined or _KEYS_END not in combined:
             hint = (

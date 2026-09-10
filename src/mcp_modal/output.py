@@ -146,14 +146,17 @@ def standardize_result(
 
 
 def json_listing(
-    command: List[str], key: str, error_prefix: str, **extra: Any
+    command: List[str], key: str, error_prefix: str, profile: Optional[str] = None, **extra: Any
 ) -> Dict[str, Any]:
     """Run a `--json` listing command and return {success, <key>: [...]}.
+
+    `profile` selects the Modal profile for this call only (via MODAL_PROFILE); the
+    stored active profile is never changed.
 
     Long listings are capped at _MAX_LIST_ITEMS entries, with `omitted_items` reporting
     how many were dropped so the caller knows the view is partial.
     """
-    result = run_modal_command(command)
+    result = run_modal_command(command, profile=profile)
     response = handle_json_response(result, error_prefix)
     if not response["success"]:
         return response
