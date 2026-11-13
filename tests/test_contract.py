@@ -1,4 +1,4 @@
-"""Guards the public contract that 1.0 promises (see the README's Versioning section).
+"""Guards the public contract that 1.0 promises (see "Packaging notes" in CLAUDE.md).
 
 `contract.json` is a snapshot of every tool's name, arguments, defaults and safety
 annotations, and every prompt's arguments. Two checks run against it:

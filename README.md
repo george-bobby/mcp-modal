@@ -139,29 +139,3 @@ that ran and its `stdout`/`stderr` when available. On success:
   running when the timeout hit.
 - Log search returns `match_count` (an exact count over the whole fetched log) and
   `matches`, which are line-numbered context blocks with each matching line marked `>`.
-
-## Versioning
-
-This project follows [Semantic Versioning](https://semver.org). The stable contract is the
-12 tool names and their arguments, the documented response fields, the 4 prompt names and
-the `mcp-modal` command. Breaking any of those requires a new major version. New tools,
-arguments and fields arrive in minor releases, and fixes in patch releases. Helper
-functions importable from `mcp_modal.server` are internal and not covered.
-
-`tests/test_contract.py` fails on a breaking change to tool or prompt names, arguments,
-defaults or safety hints. It does not check response fields, so changes to those need a
-careful review. Release notes and
-build files for each version are on the
-[Releases page](https://github.com/george-bobby/mcp-modal/releases).
-
-## Development
-
-```bash
-uv sync
-uv run --with pytest pytest     # needs no Modal account
-uv run mcp-modal                # start the server over stdio
-```
-
-## License
-
-[MIT](LICENSE)
