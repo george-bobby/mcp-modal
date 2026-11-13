@@ -124,9 +124,9 @@ def _secret_key_names(env_names: List[str]) -> List[str]:
 async def inspect_modal_secret(
     secret_name: str,
     env: Optional[str] = None,
-    profile: Optional[str] = None,
     image: Optional[str] = None,
     timeout_seconds: int = 300,
+    profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     List the KEY NAMES inside a Modal secret — never the values.
@@ -149,11 +149,11 @@ async def inspect_modal_secret(
     Args:
         secret_name: Name of the secret, from list_modal_resources(resource="secrets").
         env: Modal environment the secret lives in.
-        profile: Modal profile for this call only. Defaults to the active profile.
         image: Optional container image. Omit it to use Modal's default image, which is
             built to match this server's Python — that is the most reliable choice. Pass one
             (e.g. "python:3.12-slim") if the workspace's image builder rejects that Python.
         timeout_seconds: Max seconds to wait, including image build. Default 300.
+        profile: Modal profile for this call only. Defaults to the active profile.
 
     Returns: {keys: [...names...], all_env_names: [...], filtered_out: n}. `all_env_names`
         is the unfiltered list, so a key that looks like a runtime variable (e.g. one

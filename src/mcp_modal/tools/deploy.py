@@ -15,11 +15,11 @@ from ..output import _add_capped, extract_urls, standardize_result
 async def deploy_modal_app(
     absolute_path_to_app: str,
     env: Optional[str] = None,
-    profile: Optional[str] = None,
     name: Optional[str] = None,
     tag: Optional[str] = None,
     strategy: Optional[str] = None,
     stream_logs: bool = False,
+    profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Deploy a Modal app (`modal deploy`). Deployed endpoints persist after this returns,
@@ -29,11 +29,11 @@ async def deploy_modal_app(
         absolute_path_to_app: Absolute path to the app file. Its directory must use `uv`
             and have `modal` installed in its virtualenv.
         env: Modal environment to deploy into.
-        profile: Modal profile for this call only. Defaults to the active profile.
         name: Deployment name (`--name`).
         tag: Version tag (`--tag`).
         strategy: Rollout strategy — "rolling" or "recreate".
         stream_logs: Stream the app's logs after deploying.
+        profile: Modal profile for this call only. Defaults to the active profile.
 
     Returns: {message, urls (live endpoints), stdout, stderr}.
     """
@@ -74,9 +74,9 @@ async def run_modal_app(
     absolute_path_to_app: str,
     function_name: Optional[str] = None,
     env: Optional[str] = None,
-    profile: Optional[str] = None,
     detach: bool = False,
     timeout_seconds: int = 120,
+    profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Run a Modal function or local entrypoint once and collect its output (`modal run`).
@@ -88,9 +88,9 @@ async def run_modal_app(
         function_name: Function/entrypoint name, e.g. "main". Omit if the module has
             exactly one.
         env: Modal environment to target.
-        profile: Modal profile for this call only. Defaults to the active profile.
         detach: Keep the run alive on Modal past this call (`--detach`) — for long jobs.
         timeout_seconds: Max seconds to collect output. Default 120.
+        profile: Modal profile for this call only. Defaults to the active profile.
 
     Returns: {output, urls, truncated (still running at the timeout), output_capped}.
     """

@@ -25,13 +25,13 @@ async def get_modal_logs(
     target: str = "auto",
     timeout_seconds: int = 30,
     env: Optional[str] = None,
-    profile: Optional[str] = None,
     since: Optional[str] = None,
     until: Optional[str] = None,
     tail: Optional[int] = None,
     source: Optional[str] = None,
     timestamps: bool = False,
     follow: bool = False,
+    profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Fetch logs for an app or container (`modal app logs` / `modal container logs`).
@@ -46,7 +46,6 @@ async def get_modal_logs(
         target: "auto" (default — "ta-..." is a container), "app", or "container".
         timeout_seconds: Max seconds to collect. Default 30.
         env: Modal environment. Apps only — container logs take no environment.
-        profile: Modal profile for this call only. Defaults to the active profile.
         since / until: Time range, ISO 8601 or relative ("2h", "30m", "1d"). Max 35 days.
             `since` without `tail` fetches EVERY entry in the range — pass `until` too
             (or a `tail`) to bound the volume on a busy app.
@@ -54,6 +53,7 @@ async def get_modal_logs(
         source: "stdout", "stderr", or "system".
         timestamps: Prefix each line with its wall-clock timestamp.
         follow: Live-stream until the app/container stops or the timeout hits.
+        profile: Modal profile for this call only. Defaults to the active profile.
 
     Returns: {logs, truncated (still streaming at the timeout), output_capped (text
     trimmed to fit context — narrow with tail/since/source)}.

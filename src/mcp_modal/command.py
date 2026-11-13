@@ -4,10 +4,6 @@ Every tool ends up here: it assembles an argv list with the `_add_env` / `_uv_pr
 helpers and hands it to one of the two runners. `run_modal_command` is for commands that
 terminate on their own; `run_modal_streaming_command` is for anything that streams or may
 hang, and is bounded by a timeout rather than by output volume.
-
-Per-call profile selection rides on the `MODAL_PROFILE` environment variable, which the
-Modal CLI honors over the stored active profile — so targeting another profile never
-rewrites `~/.modal.toml` and stays safe under concurrent calls.
 """
 import os
 import signal
@@ -40,22 +36,28 @@ def _add_env(command: List[str], env: Optional[str]) -> List[str]:
     return command
 
 
-# The Modal CLI resolves the profile from MODAL_PROFILE first, falling back to the
-# stored active profile in ~/.modal.toml. Scoping the override to the child's
-# environment (rather than `modal profile activate`, which rewrites the file) keeps
-# per-call selection isolated — concurrent calls with different profiles can't race.
-_MODAL_PROFILE_ENV = "MODAL_PROFILE"
+# Settings a profile defines in ~/.modal.toml. Modal reads a MODAL_<KEY> environment
+# variable before the profile, so an inherited MODAL_TOKEN_ID would silently send a
+# `profile="work"` call to the token's workspace instead.
+_PROFILE_SETTING_ENV_VARS = (
+    "MODAL_TOKEN_ID",
+    "MODAL_TOKEN_SECRET",
+    "MODAL_SERVER_URL",
+    "MODAL_ENVIRONMENT",
+)
 
 
 def _profile_env(profile: Optional[str]) -> Optional[Dict[str, str]]:
-    """Build the child environment selecting `profile`, or None to inherit.
+    """Child environment selecting `profile` via MODAL_PROFILE, or None to inherit.
 
-    Returns None (plain inheritance) when no profile is given, so the default path —
-    active profile from ~/.modal.toml — is byte-for-byte unchanged.
+    Scoped to the child process rather than `modal profile activate`, which rewrites
+    ~/.modal.toml and would race under concurrent calls.
     """
     if not profile:
         return None
-    return {**os.environ, _MODAL_PROFILE_ENV: profile}
+    env = {k: v for k, v in os.environ.items() if k not in _PROFILE_SETTING_ENV_VARS}
+    env["MODAL_PROFILE"] = profile
+    return env
 
 
 def _redact_text(text: Optional[str], secrets: Optional[List[str]]) -> Optional[str]:

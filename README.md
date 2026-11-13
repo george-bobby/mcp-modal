@@ -155,14 +155,12 @@ use the profile's default (or `MODAL_ENVIRONMENT`). The exception is `manage_mod
 and container logs — a container ID is globally unique and the CLI accepts no environment
 there.
 
-Every tool also takes an optional `profile` argument to run that call against a different
-Modal profile (account) without switching your stored default: `list_modal_resources`
-with `resource="apps", profile="work"` lists that profile's apps, while `modal profile
-current` on your machine still reports the same default afterwards. Selection is scoped
-to the single call (via the CLI's `MODAL_PROFILE` override), so concurrent calls with
-different profiles can't interfere. To change the stored default itself, use
-`modal profile activate <name>` in a terminal; to see all profiles, use
-`list_modal_resources(resource="profile")`.
+Every tool also takes an optional `profile` to run one call against another Modal profile
+(workspace) from `~/.modal.toml`, e.g. `list_modal_resources(resource="apps",
+profile="work")`. Your stored default is left alone; change it with
+`modal profile activate <name>`. For a call that names a profile, `MODAL_TOKEN_ID`,
+`MODAL_TOKEN_SECRET`, `MODAL_SERVER_URL` and `MODAL_ENVIRONMENT` are dropped from its
+environment, since Modal would otherwise prefer them over the profile's own settings.
 
 ### Read-only
 
@@ -186,8 +184,8 @@ different profiles can't interfere. To change the stored default itself, use
 2. **Get Modal Logs** (`get_modal_logs`) — fetch or stream logs for an app *or* a container.
    - Parameters: `identifier` (required), `target` (`auto`/`app`/`container`, default
      `auto` — anything starting `ta-` is a container), `timeout_seconds` (default 30),
-     `env`, `profile`, `since`, `until`, `tail`, `source` (`stdout`/`stderr`/`system`),
-     `timestamps`, `follow`
+     `env`, `since`, `until`, `tail`, `source` (`stdout`/`stderr`/`system`),
+     `timestamps`, `follow`, `profile`
    - `since` without `tail` fetches *every* entry in the range; pass `until` as well (max
      range 35 days, `tail` max 20,000) to keep a busy app's output bounded.
    - With `follow=True`, logs stream until the app/container stops or `timeout_seconds` is
@@ -226,14 +224,14 @@ different profiles can't interfere. To change the stored default itself, use
 4. **Deploy Modal App** (`deploy_modal_app`)
    - Deploys a Modal app (`modal deploy`). Deployed web endpoints persist, so any links in
      the output are live and shareable (returned in `urls`).
-   - Parameters: `absolute_path_to_app` (required), `env`, `profile`, `name`, `tag`,
-     `strategy` (`rolling`/`recreate`), `stream_logs`
+   - Parameters: `absolute_path_to_app` (required), `env`, `name`, `tag`,
+     `strategy` (`rolling`/`recreate`), `stream_logs`, `profile`
    - The app's directory must use `uv` with `modal` installed in its virtualenv.
 
 5. **Run Modal App** (`run_modal_app`)
    - Runs a function or local entrypoint once and collects its output (`modal run`).
-   - Parameters: `absolute_path_to_app` (required), `function_name`, `env`, `profile`,
-     `detach`, `timeout_seconds` (default 120)
+   - Parameters: `absolute_path_to_app` (required), `function_name`, `env`,
+     `detach`, `timeout_seconds` (default 120), `profile`
    - Returns a snapshot with `truncated: true` if the run is still going at the timeout.
      Pass `detach=True` to keep long jobs alive on Modal past the timeout.
 
@@ -299,7 +297,7 @@ different profiles can't interfere. To change the stored default itself, use
 
 12. **Inspect Modal Secret** (`inspect_modal_secret`) — lists the **key names** inside a
     secret, never the values.
-    - Parameters: `secret_name` (required), `env`, `profile`, `image`, `timeout_seconds` (default 300)
+    - Parameters: `secret_name` (required), `env`, `image`, `timeout_seconds` (default 300), `profile`
     - Modal exposes no API for this by design: not the CLI, not the SDK, not the gRPC
       layer. The only way to see which keys a secret defines is to mount it in a container
       and list the environment. So this tool runs `modal shell --secret <name>` with

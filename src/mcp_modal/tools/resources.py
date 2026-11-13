@@ -126,8 +126,7 @@ async def list_modal_resources(
             )
 
         # resource == "profile"
-        # `profile` scopes these two calls too, so the response reflects the effective
-        # profile (the override), not just the stored default.
+        # Scoped too, so `active_profile` reports the override rather than the default.
         current = run_modal_command(["modal", "profile", "current"], profile=profile)
         listing = run_modal_command(["modal", "profile", "list", "--json"], profile=profile)
         response = {"success": current["success"] and listing["success"]}
