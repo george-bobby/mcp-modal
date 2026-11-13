@@ -31,6 +31,7 @@ async def get_modal_logs(
     source: Optional[str] = None,
     timestamps: bool = False,
     follow: bool = False,
+    profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Fetch logs for an app or container (`modal app logs` / `modal container logs`).
@@ -52,6 +53,7 @@ async def get_modal_logs(
         source: "stdout", "stderr", or "system".
         timestamps: Prefix each line with its wall-clock timestamp.
         follow: Live-stream until the app/container stops or the timeout hits.
+        profile: Modal profile for this call only. Defaults to the active profile.
 
     Returns: {logs, truncated (still streaming at the timeout), output_capped (text
     trimmed to fit context — narrow with tail/since/source)}.
@@ -86,7 +88,7 @@ async def get_modal_logs(
             _add_env(command, env)
         command.extend(["--", identifier])
 
-        result = run_modal_streaming_command(command, timeout_seconds)
+        result = run_modal_streaming_command(command, timeout_seconds, profile=profile)
 
         # A non-zero, non-timeout exit means a genuine failure (unknown app, auth error).
         # A SIGTERM/SIGKILL from our timeout produces a negative return code, which is
@@ -141,6 +143,7 @@ async def search_modal_logs(
     timestamps: bool = True,
     timeout_seconds: int = 30,
     env: Optional[str] = None,
+    profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Search an app's or container's logs and return each hit WITH surrounding context —
@@ -173,6 +176,7 @@ async def search_modal_logs(
         timestamps: Prefix lines with their timestamp. Default True.
         timeout_seconds: Max seconds spent fetching logs. Default 30.
         env: Modal environment (apps only).
+        profile: Modal profile for this call only. Defaults to the active profile.
 
     Returns: {match_count (exact, whole log searched), returned (matches actually shown),
     returned_blocks, matches (context blocks, matched lines prefixed ">"), excluded_lines,
@@ -223,7 +227,7 @@ async def search_modal_logs(
             _add_env(command, env)
         command.extend(["--", identifier])
 
-        result = run_modal_streaming_command(command, timeout_seconds)
+        result = run_modal_streaming_command(command, timeout_seconds, profile=profile)
         failed = result["returncode"] not in (0, None) and not result["timed_out"]
         if failed:
             response = {

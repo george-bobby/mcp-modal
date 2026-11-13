@@ -19,6 +19,7 @@ async def deploy_modal_app(
     tag: Optional[str] = None,
     strategy: Optional[str] = None,
     stream_logs: bool = False,
+    profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Deploy a Modal app (`modal deploy`). Deployed endpoints persist after this returns,
@@ -32,6 +33,7 @@ async def deploy_modal_app(
         tag: Version tag (`--tag`).
         strategy: Rollout strategy — "rolling" or "recreate".
         stream_logs: Stream the app's logs after deploying.
+        profile: Modal profile for this call only. Defaults to the active profile.
 
     Returns: {message, urls (live endpoints), stdout, stderr}.
     """
@@ -52,7 +54,7 @@ async def deploy_modal_app(
         # misread as a CLI flag (option injection).
         command.extend(["--", app_name])
 
-        result = run_modal_command(command, uv_directory)
+        result = run_modal_command(command, uv_directory, profile=profile)
         # URLs are extracted from the full output before capping, so a link near the end
         # of a long deploy log is still surfaced even when the text itself is trimmed.
         urls = extract_urls(result.get("stdout"), result.get("stderr"))
@@ -74,6 +76,7 @@ async def run_modal_app(
     env: Optional[str] = None,
     detach: bool = False,
     timeout_seconds: int = 120,
+    profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Run a Modal function or local entrypoint once and collect its output (`modal run`).
@@ -87,6 +90,7 @@ async def run_modal_app(
         env: Modal environment to target.
         detach: Keep the run alive on Modal past this call (`--detach`) — for long jobs.
         timeout_seconds: Max seconds to collect output. Default 120.
+        profile: Modal profile for this call only. Defaults to the active profile.
 
     Returns: {output, urls, truncated (still running at the timeout), output_capped}.
     """
@@ -101,7 +105,7 @@ async def run_modal_app(
         # `--` ends option parsing so a func ref starting with `-` can't be misread as a flag.
         command.extend(["--", func_ref])
 
-        result = run_modal_streaming_command(command, timeout_seconds, uv_directory)
+        result = run_modal_streaming_command(command, timeout_seconds, uv_directory, profile=profile)
         failed = result["returncode"] not in (0, None) and not result["timed_out"]
         if failed:
             response = {
