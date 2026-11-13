@@ -18,13 +18,23 @@ uv run mcp-modal
 # Build the wheel/sdist (hatchling backend)
 uv build
 
+# Run the tests (no Modal account needed)
+uv run --with pytest pytest
+
 # Smoke-test against a real Modal account — the server shells out to the local
 # `modal` CLI, so credentials must already be configured:
 modal setup            # one-time login → ~/.modal.toml
 modal profile current  # verify which workspace you're using
 ```
 
-There is **no test suite, linter config, or CI** in this repo. Don't claim a change is verified by tests — exercise it by running the server against a real Modal account, or by inspecting the constructed CLI commands in the returned `command` field.
+### Tests and CI
+
+`tests/` runs without a Modal account. `.github/workflows/tests.yml` runs it on every PR and push to main for Python 3.11–3.13, and `publish.yml` runs it again before building a release.
+
+- `test_contract.py` compares the live tool/prompt surface with `tests/contract.json`. A removed tool, argument or prompt, a newly required argument, a changed default, or a weakened read-only/destructive hint fails unless the major version in `pyproject.toml` was bumped. Any intended change, additions included, needs the snapshot regenerated: `UPDATE_CONTRACT=1 uv run --with pytest pytest tests/test_contract.py`, committed with the change.
+- `test_logic.py` covers the pure logic (log search, caps, cost math, argv helpers); `test_runners.py` runs the two runners against real child processes; `test_tools.py` checks validation and argv construction with `run_modal_command` stubbed out.
+
+The tests can't reach Modal itself, so behaviour that depends on the real CLI still needs a run against a real account.
 
 ## Architecture
 
@@ -145,7 +155,7 @@ A few tiny helpers keep argv construction consistent across the tools:
 - `_uv_prefixed(command, uv_directory)` — see above.
 - `_resolve_log_target(identifier, target)` — maps `target="auto"` to app vs container from the `ta-` ID prefix, so the log tools take either kind of identifier.
 
-When adding a new action, follow the existing pattern: validate the action, build the argv with these helpers, pick the right runner, route through the matching response helper, and document it in the docstring (the README's tool list mirrors those docstrings — keep them in sync).
+When adding a new action, follow the existing pattern: validate the action, build the argv with these helpers, pick the right runner, route through the matching response helper, document it in the docstring (that is the schema clients see), and update the one-line summary in the README's Tools table if the tool's scope changed.
 
 ### Prompts (`prompts.py`)
 

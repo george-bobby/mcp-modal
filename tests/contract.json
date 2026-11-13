@@ -1,0 +1,432 @@
+{
+  "major_version": 1,
+  "tools": {
+    "analyze_modal_costs": {
+      "required": [],
+      "arguments": {
+        "app": {
+          "default": null
+        },
+        "end": {
+          "default": null
+        },
+        "environment": {
+          "default": null
+        },
+        "period": {
+          "default": null
+        },
+        "profile": {
+          "default": null
+        },
+        "resolution": {
+          "default": "d"
+        },
+        "start": {
+          "default": null
+        },
+        "tag_names": {
+          "default": null
+        },
+        "timezone": {
+          "default": null
+        },
+        "top_n": {
+          "default": 10
+        },
+        "view": {
+          "default": "by_app"
+        }
+      },
+      "read_only": true,
+      "destructive": false
+    },
+    "deploy_modal_app": {
+      "required": [
+        "absolute_path_to_app"
+      ],
+      "arguments": {
+        "absolute_path_to_app": {
+          "default": null
+        },
+        "env": {
+          "default": null
+        },
+        "name": {
+          "default": null
+        },
+        "profile": {
+          "default": null
+        },
+        "strategy": {
+          "default": null
+        },
+        "stream_logs": {
+          "default": false
+        },
+        "tag": {
+          "default": null
+        }
+      },
+      "read_only": false,
+      "destructive": true
+    },
+    "get_modal_logs": {
+      "required": [
+        "identifier"
+      ],
+      "arguments": {
+        "env": {
+          "default": null
+        },
+        "follow": {
+          "default": false
+        },
+        "identifier": {
+          "default": null
+        },
+        "profile": {
+          "default": null
+        },
+        "since": {
+          "default": null
+        },
+        "source": {
+          "default": null
+        },
+        "tail": {
+          "default": null
+        },
+        "target": {
+          "default": "auto"
+        },
+        "timeout_seconds": {
+          "default": 30
+        },
+        "timestamps": {
+          "default": false
+        },
+        "until": {
+          "default": null
+        }
+      },
+      "read_only": true,
+      "destructive": false
+    },
+    "inspect_modal_secret": {
+      "required": [
+        "secret_name"
+      ],
+      "arguments": {
+        "env": {
+          "default": null
+        },
+        "image": {
+          "default": null
+        },
+        "profile": {
+          "default": null
+        },
+        "secret_name": {
+          "default": null
+        },
+        "timeout_seconds": {
+          "default": 300
+        }
+      },
+      "read_only": false,
+      "destructive": false
+    },
+    "list_modal_resources": {
+      "required": [
+        "resource"
+      ],
+      "arguments": {
+        "env": {
+          "default": null
+        },
+        "name": {
+          "default": null
+        },
+        "path": {
+          "default": "/"
+        },
+        "profile": {
+          "default": null
+        },
+        "resource": {
+          "default": null
+        }
+      },
+      "read_only": true,
+      "destructive": false
+    },
+    "manage_modal_app": {
+      "required": [
+        "action",
+        "app_identifier"
+      ],
+      "arguments": {
+        "action": {
+          "default": null
+        },
+        "app_identifier": {
+          "default": null
+        },
+        "env": {
+          "default": null
+        },
+        "profile": {
+          "default": null
+        },
+        "version": {
+          "default": null
+        }
+      },
+      "read_only": false,
+      "destructive": true
+    },
+    "manage_modal_container": {
+      "required": [
+        "action",
+        "container_id"
+      ],
+      "arguments": {
+        "action": {
+          "default": null
+        },
+        "command": {
+          "default": null
+        },
+        "container_id": {
+          "default": null
+        },
+        "profile": {
+          "default": null
+        },
+        "timeout_seconds": {
+          "default": 60
+        }
+      },
+      "read_only": false,
+      "destructive": true
+    },
+    "manage_modal_secret": {
+      "required": [
+        "action",
+        "secret_name"
+      ],
+      "arguments": {
+        "action": {
+          "default": null
+        },
+        "env": {
+          "default": null
+        },
+        "force": {
+          "default": false
+        },
+        "from_dotenv": {
+          "default": null
+        },
+        "from_json": {
+          "default": null
+        },
+        "key_values": {
+          "default": null
+        },
+        "profile": {
+          "default": null
+        },
+        "secret_name": {
+          "default": null
+        }
+      },
+      "read_only": false,
+      "destructive": true
+    },
+    "manage_modal_volume": {
+      "required": [
+        "action",
+        "volume_name"
+      ],
+      "arguments": {
+        "action": {
+          "default": null
+        },
+        "env": {
+          "default": null
+        },
+        "new_name": {
+          "default": null
+        },
+        "profile": {
+          "default": null
+        },
+        "volume_name": {
+          "default": null
+        }
+      },
+      "read_only": false,
+      "destructive": true
+    },
+    "modal_volume_files": {
+      "required": [
+        "action",
+        "volume_name"
+      ],
+      "arguments": {
+        "action": {
+          "default": null
+        },
+        "env": {
+          "default": null
+        },
+        "force": {
+          "default": false
+        },
+        "local_path": {
+          "default": null
+        },
+        "paths": {
+          "default": null
+        },
+        "profile": {
+          "default": null
+        },
+        "recursive": {
+          "default": false
+        },
+        "remote_path": {
+          "default": null
+        },
+        "volume_name": {
+          "default": null
+        }
+      },
+      "read_only": false,
+      "destructive": true
+    },
+    "run_modal_app": {
+      "required": [
+        "absolute_path_to_app"
+      ],
+      "arguments": {
+        "absolute_path_to_app": {
+          "default": null
+        },
+        "detach": {
+          "default": false
+        },
+        "env": {
+          "default": null
+        },
+        "function_name": {
+          "default": null
+        },
+        "profile": {
+          "default": null
+        },
+        "timeout_seconds": {
+          "default": 120
+        }
+      },
+      "read_only": false,
+      "destructive": false
+    },
+    "search_modal_logs": {
+      "required": [
+        "identifier",
+        "pattern"
+      ],
+      "arguments": {
+        "case_sensitive": {
+          "default": false
+        },
+        "context_lines": {
+          "default": 3
+        },
+        "env": {
+          "default": null
+        },
+        "exclude": {
+          "default": null
+        },
+        "identifier": {
+          "default": null
+        },
+        "max_matches": {
+          "default": 50
+        },
+        "pattern": {
+          "default": null
+        },
+        "prefilter": {
+          "default": false
+        },
+        "profile": {
+          "default": null
+        },
+        "regex": {
+          "default": false
+        },
+        "since": {
+          "default": null
+        },
+        "source": {
+          "default": null
+        },
+        "tail": {
+          "default": null
+        },
+        "target": {
+          "default": "auto"
+        },
+        "timeout_seconds": {
+          "default": 30
+        },
+        "timestamps": {
+          "default": true
+        },
+        "until": {
+          "default": null
+        }
+      },
+      "read_only": true,
+      "destructive": false
+    }
+  },
+  "prompts": {
+    "debug_modal_app": {
+      "required": [
+        "app_name"
+      ],
+      "arguments": [
+        "app_name",
+        "symptom"
+      ]
+    },
+    "deploy_and_verify": {
+      "required": [
+        "absolute_path_to_app"
+      ],
+      "arguments": [
+        "absolute_path_to_app",
+        "env"
+      ]
+    },
+    "investigate_modal_costs": {
+      "required": [],
+      "arguments": [
+        "app",
+        "period"
+      ]
+    },
+    "review_modal_account": {
+      "required": [],
+      "arguments": [
+        "env"
+      ]
+    }
+  }
+}
