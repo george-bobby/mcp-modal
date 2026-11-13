@@ -106,14 +106,12 @@ read-only tools (`list_modal_resources`, `get_modal_logs`, `search_modal_logs`,
 - `modal_volume_files` can upload any local file (`put`) or overwrite one (`get` with
   `force`).
 - `manage_modal_secret` with `from_dotenv` or `from_json` reads a local file and stores
-  its contents in a Modal secret. `MCP_MODAL_ALLOWED_LOCAL_PATHS` does not cover these
-  paths.
+  its contents in a Modal secret.
 - `manage_modal_container` with `exec` runs arbitrary commands in a container.
 
 Every tool declares MCP read-only and destructive hints so clients can tell these apart.
-Positional names and paths are passed after `--`, so a value starting with `-` can't act
-as a CLI flag. Values given to options, such as the secret name in `inspect_modal_secret`
-or the `from_dotenv`/`from_json` paths, come before `--` and don't get that protection.
+Names and paths are passed after `--` or as `--option=value`, so a value starting with `-`
+can never act as a CLI flag.
 
 ## Configuration
 
@@ -121,7 +119,7 @@ Set these in the `env` block of your MCP client config:
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `MCP_MODAL_ALLOWED_LOCAL_PATHS` | unset (no limit) | `:`-separated directories that `modal_volume_files` may read from or write to |
+| `MCP_MODAL_ALLOWED_LOCAL_PATHS` | unset (no limit) | `:`-separated directories that `modal_volume_files` and `manage_modal_secret` may read from or write to |
 | `MCP_MODAL_MAX_OUTPUT_CHARS` | `40000` | Character limit per text field in a response. `0` turns the limit off |
 
 When output is cut, the response sets `output_capped: true` and keeps both the start and

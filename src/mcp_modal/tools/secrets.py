@@ -7,7 +7,7 @@ list the environment — see the probe notes below.
 from typing import Any, Dict, List, Optional
 
 from ..app import logger, mcp, _mutating
-from ..command import _add_env, run_modal_command, run_modal_streaming_command
+from ..command import _add_env, _check_local_path, run_modal_command, run_modal_streaming_command
 from ..output import _add_capped, standardize_result
 
 
@@ -34,6 +34,7 @@ async def manage_modal_secret(
         secret_name: Secret name.
         key_values: For "create": {"API_KEY": "abc", ...}.
         from_dotenv / from_json: For "create": load key/values from a local file instead.
+            Subject to MCP_MODAL_ALLOWED_LOCAL_PATHS when it is set.
         force: For "create": overwrite an existing secret.
         env: Modal environment to target.
         profile: Modal profile for this call only. Defaults to the active profile.
@@ -58,11 +59,20 @@ async def manage_modal_secret(
                 "success": False,
                 "error": "Provide key_values, from_dotenv, or from_json to create a secret",
             }
+        # These files' contents are uploaded into the secret, so they get the same
+        # allowlist as volume `put`.
+        for local_file in (from_dotenv, from_json):
+            if local_file:
+                denied = _check_local_path(local_file)
+                if denied:
+                    return {"success": False, "error": denied}
         command = ["modal", "secret", "create"]
+        # `--opt=value` binds the value even when it starts with `-`; these options
+        # come before the `--` separator, so that is their only protection.
         if from_dotenv:
-            command.extend(["--from-dotenv", from_dotenv])
+            command.append(f"--from-dotenv={from_dotenv}")
         if from_json:
-            command.extend(["--from-json", from_json])
+            command.append(f"--from-json={from_json}")
         if force:
             command.append("--force")
         _add_env(command, env)
@@ -164,8 +174,9 @@ async def inspect_modal_secret(
     try:
         command = ["modal", "shell", "--no-pty"]
         if image:
-            command.extend(["--image", image])
-        command.extend(["--secret", secret_name])
+            command.append(f"--image={image}")
+        # `=` binds each value, so a leading `-` can't be read as another flag.
+        command.append(f"--secret={secret_name}")
         _add_env(command, env)
         command.extend(["-c", _KEYS_PROBE])
 
