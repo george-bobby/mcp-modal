@@ -62,3 +62,39 @@ def test_secret_create_redacts_values(captured):
                                      key_values={"API_KEY": "hunter2"}))
     assert result["success"] is True
     assert captured[-1]["redact"] == ["hunter2"]
+
+
+def test_secret_files_respect_the_local_path_allowlist(captured, monkeypatch, tmp_path):
+    monkeypatch.setenv("MCP_MODAL_ALLOWED_LOCAL_PATHS", str(tmp_path))
+    for option in ("from_dotenv", "from_json"):
+        result = run(manage_modal_secret(action="create", secret_name="s",
+                                         **{option: "/etc/passwd"}))
+        assert result["success"] is False and "outside the allowed roots" in result["error"]
+    assert captured == []  # refused before any command was built or run
+
+    allowed = str(tmp_path / ".env")
+    assert run(manage_modal_secret(action="create", secret_name="s", from_dotenv=allowed))["success"]
+    assert f"--from-dotenv={allowed}" in captured[-1]["command"]
+
+
+def test_option_values_are_bound_with_equals(captured):
+    run(manage_modal_secret(action="create", secret_name="s", from_dotenv="-x.env",
+                            from_json="-y.json"))
+    command = captured[-1]["command"]
+    assert "--from-dotenv=-x.env" in command and "--from-json=-y.json" in command
+    assert command.index("--from-json=-y.json") < command.index("--")
+
+
+def test_inspect_secret_binds_the_name_with_equals(monkeypatch):
+    import mcp_modal.tools.secrets as secrets
+
+    seen = {}
+
+    def fake(command, timeout_seconds, uv_directory=None, profile=None):
+        seen["command"] = command
+        return {"stdout": "", "stderr": "", "returncode": 1, "timed_out": False,
+                "command": " ".join(command)}
+
+    monkeypatch.setattr(secrets, "run_modal_streaming_command", fake)
+    run(secrets.inspect_modal_secret(secret_name="-weird", image="-img"))
+    assert "--secret=-weird" in seen["command"] and "--image=-img" in seen["command"]
