@@ -153,6 +153,7 @@ Four `@mcp.prompt()` functions (`debug_modal_app`, `deploy_and_verify`, `review_
 
 ## Packaging notes
 
+- Versioning is semver from 1.0.0, with the contract spelled out in the README's Versioning section. Removing or renaming a tool, argument, `action`/`resource` value, response field or prompt, making an optional argument required, or changing what an existing field means is a **major** bump. Additions are minor; fixes are patch.
 - `pyproject.toml` declares the `mcp-modal` console script → `mcp_modal.server:main`, which just calls `mcp.run()` (FastMCP's stdio loop).
 - The `mcp` dependency is pinned `>=1.9.2,<2` on purpose. `mcp` 2.x renamed `FastMCP` to `MCPServer` and moved the module, so `from mcp.server.fastmcp import FastMCP` raises `ModuleNotFoundError` there. `uvx mcp-modal` resolves dependencies fresh from PyPI metadata (it does not read `uv.lock`), so an unbounded specifier would break every new install the day 2.x is picked up.
 - `server.json` is the MCP registry manifest. Its `version` must match `pyproject.toml`'s `version` on every release — bump both together. Same for `packages[0].version` inside `server.json`.

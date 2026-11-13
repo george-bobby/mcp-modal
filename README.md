@@ -66,9 +66,10 @@ the client or rebooting changes nothing, because the cache lives on disk. Differ
 end up on different versions depending on when they first ran it, with no warning.
 
 - **`mcp-modal@latest`** re-resolves on every launch, so a restart picks up new releases.
-  Costs one network round-trip at startup. Use it while the tool surface is still moving.
-- **`mcp-modal@0.4.0`** (an explicit version) is reproducible and upgrades become a
-  deliberate one-line change. Use it once you want stability, or for a wider audience.
+  Costs one network round-trip at startup. It will also pick up a future major version,
+  the only kind of release allowed to break existing calls (see [Versioning](#versioning)).
+- **`mcp-modal@1.0.0`** (an explicit version) is reproducible and upgrades become a
+  deliberate one-line change. Use it when every machine must run the same build.
 
 To move a machine that is already stuck on an old cached build, switching it to either form
 above is enough — requesting a version invalidates the cache. Otherwise
@@ -418,6 +419,21 @@ All tools return responses in a standardized format, with slight variations depe
     "stderr": "error output"     # if available
 }
 ```
+
+## Versioning
+
+mcp-modal follows [Semantic Versioning](https://semver.org). From 1.0.0 on, these are the
+stable contract, and changing any of them in an incompatible way needs a new major version:
+
+- the 12 tool names, their argument names and the meaning of each argument
+- the response fields documented above and in each tool's description
+- the 4 prompt names
+- the `mcp-modal` command
+
+A minor release adds things: new tools, new optional arguments, new response fields, or new
+`action` / `resource` values. A patch release fixes bugs. Helpers that `mcp_modal.server`
+re-exports besides the tools and prompts (`grep_lines`, `run_modal_command`, …) are internal
+and may change in any release.
 
 ## License
 
