@@ -105,11 +105,15 @@ read-only tools (`list_modal_resources`, `get_modal_logs`, `search_modal_logs`,
 - `deploy_modal_app` and `run_modal_app` execute local Python code.
 - `modal_volume_files` can upload any local file (`put`) or overwrite one (`get` with
   `force`).
+- `manage_modal_secret` with `from_dotenv` or `from_json` reads a local file and stores
+  its contents in a Modal secret. `MCP_MODAL_ALLOWED_LOCAL_PATHS` does not cover these
+  paths.
 - `manage_modal_container` with `exec` runs arbitrary commands in a container.
 
 Every tool declares MCP read-only and destructive hints so clients can tell these apart.
-Names and paths are always passed after `--`, so a value starting with `-` can never act as
-a CLI flag.
+Positional names and paths are passed after `--`, so a value starting with `-` can't act
+as a CLI flag. Values given to options, such as the secret name in `inspect_modal_secret`
+or the `from_dotenv`/`from_json` paths, come before `--` and don't get that protection.
 
 ## Configuration
 
@@ -128,8 +132,10 @@ the end of the text.
 Every tool returns JSON with `success`. On failure it also has `error`, plus the `command`
 that ran and its `stdout`/`stderr` when available. On success:
 
-- Listings return the items under a key named for the resource (`apps`, `volumes`, …).
-  More than 200 items are cut, and `omitted_items` says how many were left out.
+- `list_modal_resources` returns its items under `apps`, `history`, `containers`,
+  `volumes`, `contents`, `secrets` or `environments`. Lists longer than 200 items are cut,
+  and `omitted_items` says how many were left out. `resource="profile"` returns
+  `active_profile` and `profiles` instead.
 - Actions return `message`, `command`, `stdout` and `stderr`.
 - Logs and runs return `logs` or `output`. `truncated: true` means the command was still
   running when the timeout hit.
@@ -144,7 +150,9 @@ the `mcp-modal` command. Breaking any of those requires a new major version. New
 arguments and fields arrive in minor releases, and fixes in patch releases. Helper
 functions importable from `mcp_modal.server` are internal and not covered.
 
-`tests/test_contract.py` checks every change against that contract. Release notes and
+`tests/test_contract.py` fails on a breaking change to tool or prompt names, arguments,
+defaults or safety hints. It does not check response fields, so changes to those need a
+careful review. Release notes and
 build files for each version are on the
 [Releases page](https://github.com/george-bobby/mcp-modal/releases).
 

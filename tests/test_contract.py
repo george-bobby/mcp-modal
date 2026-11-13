@@ -91,21 +91,38 @@ def _write_snapshot(contract: dict) -> None:
     SNAPSHOT.write_text(json.dumps(contract, indent=2) + "\n")
 
 
+def unapproved_breaking_changes(old: dict, new: dict) -> list:
+    """Breaking changes not covered by a major version bump past the snapshot's."""
+    if new["major_version"] > old["major_version"]:
+        return []
+    return breaking_changes(old, new)
+
+
+def _breaking_change_message(old: dict, problems: list) -> str:
+    return (
+        "Breaking change to the public contract without a major version bump:\n  "
+        + "\n  ".join(problems)
+        + f"\nEither keep the old behaviour, or bump pyproject.toml to "
+        f"{old['major_version'] + 1}.0.0 and regenerate the snapshot."
+    )
+
+
+# Regenerating checks against the old snapshot first, so UPDATE_CONTRACT=1 can't be
+# used to record a breaking change as the new baseline without a major bump.
 if os.environ.get("UPDATE_CONTRACT"):
-    _write_snapshot(current_contract())
+    _new = current_contract()
+    if SNAPSHOT.exists() and SNAPSHOT.read_text().strip() not in ("", "{}"):
+        _old = json.loads(SNAPSHOT.read_text())
+        _problems = unapproved_breaking_changes(_old, _new)
+        if _problems:
+            raise RuntimeError(_breaking_change_message(_old, _problems))
+    _write_snapshot(_new)
 
 
 def test_no_breaking_changes():
     old = json.loads(SNAPSHOT.read_text())
-    new = current_contract()
-    problems = breaking_changes(old, new)
-    if problems and new["major_version"] <= old["major_version"]:
-        raise AssertionError(
-            "Breaking change to the public contract without a major version bump:\n  "
-            + "\n  ".join(problems)
-            + f"\nEither keep the old behaviour, or bump pyproject.toml to "
-            f"{old['major_version'] + 1}.0.0 and regenerate the snapshot."
-        )
+    problems = unapproved_breaking_changes(old, current_contract())
+    assert not problems, _breaking_change_message(old, problems)
 
 
 def test_snapshot_is_current():
@@ -126,6 +143,15 @@ def test_every_tool_takes_profile_and_it_is_optional():
     for name, tool in current_contract()["tools"].items():
         assert "profile" in tool["arguments"], name
         assert "profile" not in tool["required"], name
+
+
+def test_a_major_bump_allows_breaking_changes():
+    old = current_contract()
+    new = json.loads(json.dumps(old))
+    del new["tools"]["get_modal_logs"]["arguments"]["since"]
+    assert unapproved_breaking_changes(old, new)
+    new["major_version"] = old["major_version"] + 1
+    assert unapproved_breaking_changes(old, new) == []
 
 
 def test_detects_a_removed_argument():

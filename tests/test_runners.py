@@ -8,6 +8,7 @@ PRINT_ENV = [sys.executable, "-c",
 
 
 def test_no_profile_inherits_the_environment_unchanged(monkeypatch):
+    monkeypatch.delenv("MODAL_PROFILE", raising=False)
     monkeypatch.setenv("MODAL_TOKEN_ID", "ak-from-env")
     assert _profile_env(None) is None
     assert run_modal_command(PRINT_ENV)["stdout"].split() == ["None", "ak-from-env"]
